@@ -28,51 +28,45 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 # ---------------------------------------------------------------------------
-# 配置加载（config/server_main.json，环境变量可覆盖）
+# 配置加载（server_main.default.json → server_main.json 覆盖 → 环境变量覆盖）
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config", "server_main.json")
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+DEFAULT_CONFIG_PATH = os.path.join(CONFIG_DIR, "server_main.default.json")
+USER_CONFIG_PATH = os.path.join(CONFIG_DIR, "server_main.json")
 
 
-def _load_config(path: str) -> dict[str, Any]:
-    """读取 JSON 配置文件；若文件缺失则回退到内置默认值。"""
-    defaults: dict[str, Any] = {
-        "server": {
-            "host": "0.0.0.0",
-            "port": 8000,
-            "reload": False,
-            "log_level": "info",
-        },
-        "cors": {
-            "allowed_origins": ["*"],
-            "allow_credentials": True,
-            "allow_methods": ["*"],
-            "allow_headers": ["*"],
-        },
-        "paths": {"static_dir": "static"},
-        "logging": {
-            "level": "INFO",
-            "format": "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-        },
-    }
-    if os.path.isfile(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                user_cfg = json.load(f)
-            # 浅合并每个分组，避免用户配置缺失字段时崩溃
-            for section, values in user_cfg.items():
-                if isinstance(values, dict) and isinstance(defaults.get(section), dict):
-                    defaults[section].update(values)
-                else:
-                    defaults[section] = values
-        except (json.JSONDecodeError, OSError) as exc:
-            # 配置解析失败时先打印到 stderr（此时 logger 还未初始化）
-            import sys
-            print(f"[server_main] 读取配置失败 {path}: {exc}，使用默认值", file=sys.stderr)
-    return defaults
+def _read_json(path: str) -> dict[str, Any]:
+    """读取单个 JSON 文件，失败时返回空字典并打印警告。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as exc:
+        import sys
+        print(f"[server_main] 读取配置失败 {path}: {exc}", file=sys.stderr)
+        return {}
 
 
-CONFIG = _load_config(CONFIG_PATH)
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """递归合并 override 到 base：dict 深合并，其他类型直接覆盖。"""
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _load_config(default_path: str, user_path: str) -> dict[str, Any]:
+    """先读 default 配置，再用 user 配置递归覆盖。"""
+    config = _read_json(default_path)
+    config = _deep_merge(config, _read_json(user_path))
+    return config
+
+
+CONFIG = _load_config(DEFAULT_CONFIG_PATH, USER_CONFIG_PATH)
 
 # 日志（使用加载后的配置）
 logging.basicConfig(
@@ -95,8 +89,8 @@ ALLOW_METHODS = CONFIG["cors"]["allow_methods"]
 ALLOW_HEADERS = CONFIG["cors"]["allow_headers"]
 STATIC_DIR = os.path.join(BASE_DIR, CONFIG["paths"]["static_dir"])
 
-logger.info("已加载配置 | path=%s | host=%s | port=%d | static=%s",
-            CONFIG_PATH, DEFAULT_HOST, DEFAULT_PORT, STATIC_DIR)
+logger.info("已加载配置 | default=%s | user=%s | host=%s | port=%d | static=%s",
+            DEFAULT_CONFIG_PATH, USER_CONFIG_PATH, DEFAULT_HOST, DEFAULT_PORT, STATIC_DIR)
 
 
 # ---------------------------------------------------------------------------
