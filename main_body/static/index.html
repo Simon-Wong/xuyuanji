@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Server Skeleton · 前端验证页</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 820px; margin: 40px auto; padding: 0 20px; line-height: 1.6;
+  }
+  h1 { margin-bottom: 8px; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 12px; margin-right: 6px;
+  }
+  .badge.ok  { background: #e6f4ea; color: #137333; }
+  .badge.err { background: #fce8e6; color: #c5221f; }
+  pre {
+    background: #1f1f1f; color: #d4d4d4; padding: 12px; border-radius: 8px;
+    overflow-x: auto; max-height: 280px; overflow-y: auto;
+  }
+  button {
+    padding: 6px 14px; margin: 4px; border-radius: 6px; border: 1px solid #888;
+    cursor: pointer; background: #fff; color: #222;
+  }
+  input { padding: 6px 10px; border-radius: 6px; border: 1px solid #888; width: 360px; }
+  .row { margin: 10px 0; }
+</style>
+</head>
+<body>
+  <h1>🚀 Server Skeleton Demo</h1>
+  <p>
+    <span id="httpBadge" class="badge err">HTTP 未检测</span>
+    <span id="wsBadge" class="badge err">WebSocket 未连接</span>
+    <span id="clientId" style="opacity:0.7;font-size:13px;"></span>
+  </p>
+
+  <h3>HTTP 接口</h3>
+  <div class="row">
+    <button onclick="pingHealth()">GET /api/health</button>
+    <button onclick="pingClients()">GET /api/clients</button>
+    <button onclick="broadcastHTTP()">POST /api/broadcast (HTTP)</button>
+  </div>
+
+  <h3>WebSocket 消息</h3>
+  <div class="row">
+    <button onclick="wsConnect()">连接</button>
+    <button onclick="wsClose()">断开</button>
+    <button onclick="wsSend({action:'ping'})">ping</button>
+    <button onclick="wsSend({action:'echo', data:'你好，服务器！'})">echo</button>
+    <button onclick="wsSend({action:'stream_demo', count:6})">流式示例</button>
+    <button onclick="wsSend({action:'broadcast', data:{text:'来自 WS 广播 👋'}})">广播（WS）</button>
+  </div>
+  <div class="row">
+    <input id="toInput" placeholder="目标 client_id（用于 send 命令）" />
+    <button onclick="sendToClient()">发送给指定客户端</button>
+  </div>
+
+  <h3>日志</h3>
+  <pre id="log"></pre>
+
+<script>
+const API = "";
+let ws = null;
+
+function log(text, data) {
+  const el = document.getElementById("log");
+  const ts = new Date().toLocaleTimeString();
+  const line = typeof data === "undefined"
+    ? `[${ts}] ${text}`
+    : `[${ts}] ${text}\n    ${JSON.stringify(data, null, 2)}`;
+  el.textContent += line + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+async function pingHealth() {
+  try {
+    const r = await fetch(API + "/api/health");
+    const j = await r.json();
+    document.getElementById("httpBadge").className = "badge ok";
+    document.getElementById("httpBadge").textContent = "HTTP OK";
+    log("GET /api/health", j);
+  } catch (e) { log("HTTP 失败", e.message); }
+}
+
+async function pingClients() {
+  const r = await fetch(API + "/api/clients");
+  log("GET /api/clients", await r.json());
+}
+
+async function broadcastHTTP() {
+  const r = await fetch(API + "/api/broadcast", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: { text: "通过 HTTP API 广播", ts: Date.now() } }),
+  });
+  log("POST /api/broadcast", await r.json());
+}
+
+function wsConnect() {
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  ws = new WebSocket(proto + location.host + "/ws");
+  ws.onopen = () => {
+    document.getElementById("wsBadge").className = "badge ok";
+    document.getElementById("wsBadge").textContent = "WebSocket 已连接";
+    log("WS 连接已建立");
+  };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "system" && msg.client_id) {
+      document.getElementById("clientId").textContent = "client_id: " + msg.client_id;
+    }
+    log("← " + msg.type, msg);
+  };
+  ws.onclose = () => {
+    document.getElementById("wsBadge").className = "badge err";
+    document.getElementById("wsBadge").textContent = "WebSocket 已断开";
+    log("WS 连接已关闭");
+  };
+  ws.onerror = (e) => log("WS 错误", e);
+}
+
+function wsClose() { ws?.close(); }
+
+function wsSend(obj) {
+  if (!ws || ws.readyState !== 1) { alert("请先连接 WebSocket"); return; }
+  log("→ " + obj.action, obj);
+  ws.send(JSON.stringify(obj));
+}
+
+function sendToClient() {
+  const to = document.getElementById("toInput").value.trim();
+  if (!to) { alert("请填写目标 client_id"); return; }
+  wsSend({ action: "send", to, data: { hello: "点对点消息 🔒" } });
+}
+
+pingHealth();
+</script>
+</body>
+</html>
