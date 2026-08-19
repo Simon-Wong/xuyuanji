@@ -3,12 +3,19 @@
 # ASGI 服务器：Uvicorn，运行 FastAPI 应用，纯 Python
 # 通信：WebSocket + JSON，结构清晰，支持流式
 
-from __future__ import annotations
+#基于python 3.11
+
+import os
+import sys
+from pathlib import Path
+ROOT_DIR=Path(__file__).parent.parent
+#print(ROOT_DIR)
+sys.path.append(str(ROOT_DIR))
+from config import load_config, get_config
 
 import asyncio
-import json
 import logging
-import os
+
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -28,66 +35,40 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 # ---------------------------------------------------------------------------
-# 配置加载（server_main.default.json → server_main.json 覆盖 → 环境变量覆盖）
+# 配置加载（公共 loader：default.json -> user.json 深合并 -> 环境变量字段级覆盖）
+# 配置文件位置：项目根 config/ 目录
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-DEFAULT_CONFIG_PATH = os.path.join(CONFIG_DIR, "server_main.default.json")
-USER_CONFIG_PATH = os.path.join(CONFIG_DIR, "server_main.json")
+PROJECT_ROOT = os.path.dirname(BASE_DIR)  # 项目根：main_body/..
+DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "server_main.default.json")
+USER_CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "server_main.json")
 
-
-def _read_json(path: str) -> dict[str, Any]:
-    """读取单个 JSON 文件，失败时返回空字典并打印警告。"""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except (json.JSONDecodeError, OSError) as exc:
-        import sys
-        print(f"[server_main] 读取配置失败 {path}: {exc}", file=sys.stderr)
-        return {}
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """递归合并 override 到 base：dict 深合并，其他类型直接覆盖。"""
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            base[key] = _deep_merge(base[key], value)
-        else:
-            base[key] = value
-    return base
-
-
-def _load_config(default_path: str, user_path: str) -> dict[str, Any]:
-    """先读 default 配置，再用 user 配置递归覆盖。"""
-    config = _read_json(default_path)
-    config = _deep_merge(config, _read_json(user_path))
-    return config
-
-
-CONFIG = _load_config(DEFAULT_CONFIG_PATH, USER_CONFIG_PATH)
+CONFIG = load_config(
+    module="server_main",
+    default_path=DEFAULT_CONFIG_PATH,
+    user_path=USER_CONFIG_PATH,
+)
 
 # 日志（使用加载后的配置）
 logging.basicConfig(
-    level=CONFIG["logging"]["level"],
-    format=CONFIG["logging"]["format"],
+    level=get_config("server_main", "logging", "level"),
+    format=get_config("server_main", "logging", "format"),
 )
 logger = logging.getLogger("server_main")
 
 # 便捷配置变量（环境变量优先级最高，用于容器/CI 场景覆盖）
-DEFAULT_HOST = os.getenv("SERVER_HOST", CONFIG["server"]["host"])
-DEFAULT_PORT = int(os.getenv("SERVER_PORT", str(CONFIG["server"]["port"])))
-RELOAD = bool(os.getenv("SERVER_RELOAD", str(CONFIG["server"]["reload"]).lower()) in ("1", "true", "yes"))
-LOG_LEVEL = os.getenv("SERVER_LOG_LEVEL", CONFIG["server"]["log_level"])
+DEFAULT_HOST = os.getenv("SERVER_HOST", get_config("server_main", "server", "host"))
+DEFAULT_PORT = int(os.getenv("SERVER_PORT", str(get_config("server_main", "server", "port"))))
+RELOAD = bool(os.getenv("SERVER_RELOAD", str(get_config("server_main", "server", "reload")).lower()) in ("1", "true", "yes"))
+LOG_LEVEL = os.getenv("SERVER_LOG_LEVEL", get_config("server_main", "server", "log_level"))
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
-    ",".join(CONFIG["cors"]["allowed_origins"]),
+    ",".join(get_config("server_main", "cors", "allowed_origins")),
 ).split(",")
-ALLOW_CREDENTIALS = CONFIG["cors"]["allow_credentials"]
-ALLOW_METHODS = CONFIG["cors"]["allow_methods"]
-ALLOW_HEADERS = CONFIG["cors"]["allow_headers"]
-STATIC_DIR = os.path.join(BASE_DIR, CONFIG["paths"]["static_dir"])
+ALLOW_CREDENTIALS = get_config("server_main", "cors", "allow_credentials")
+ALLOW_METHODS = get_config("server_main", "cors", "allow_methods")
+ALLOW_HEADERS = get_config("server_main", "cors", "allow_headers")
+STATIC_DIR = os.path.join(BASE_DIR, get_config("server_main", "paths", "static_dir"))
 
 logger.info("已加载配置 | default=%s | user=%s | host=%s | port=%d | static=%s",
             DEFAULT_CONFIG_PATH, USER_CONFIG_PATH, DEFAULT_HOST, DEFAULT_PORT, STATIC_DIR)
