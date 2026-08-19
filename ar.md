@@ -314,53 +314,133 @@ class Task:
 
 ---
 
-## 4. 核心数据流
+## 4. 事件驱动架构
 
-### 4.1 简单路径
+### 4.1 核心思想
 
-```
-用户输入
-  ↓
-上下文管理器 → 专用上下文
-  ↓
-路由器（模型选择器判定为简单）
-  ↓
-模型封装 → 沙箱 → 产物
-  ↓
-核验器（轻量核验）
-  ↓
-汇报器 → 展示器 → Web Server → 用户
-```
+Agent 采用事件驱动架构（EDA），通过事件总线连接各组件。只有需要等待外部响应的组件拥有独立执行线程，其余组件均为被动触发器。
 
-### 4.2 复杂路径
+### 4.2 组件执行模型
 
-```
-用户输入
-  ↓
-上下文管理器 → 专用上下文
-  ↓
-路由器（模型规划器生成计划排期表）
-  ↓
-调度器 → 任务组 → 沙箱
-  ↓
-（子任务：路由器 → 模型封装 → 产物）
-  ↓
-核验器（深度核验）
-  ↓
-汇报器 → 展示器 → Web Server → 用户
-```
+**拥有独立执行线程的组件**：
+- 模型封装（简单路径）：等待模型 API 返回
+- 任务组（复杂路径）：内部执行链路，使用线程池管理子任务
 
-### 4.3 实时进度流
+**被动触发的组件**（事件订阅者）：
+- 上下文管理器：订阅用户输入事件
+- 路由器：订阅"专用上下文就绪"事件
+- 调度器：订阅"计划排期表就绪"事件（被动接收，主动创建任务组实例）
+- 核验器：订阅"产物就绪"事件
+- 汇报器：订阅"核验通过"事件
+- 展示器：订阅"汇报完成"/"任务进度"事件
+
+### 4.3 事件总线
 
 ```
-任务组内部执行
-  ↓
-产生思维过程 / 中间结果
-  ↓
-展示器（实时收集）
-  ↓
-Web Server → 用户（流式推送）
+┌─────────────────────────────────────────────────────────────────┐
+│                        事件总线 (Event Bus)                      │
+│                                                                 │
+│  事件类型：                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
+│  │ UserInput    │  │ ContextReady │  │ ScheduleReady│           │
+│  └──────────────┘  └──────────────┘  └──────────────┘           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
+│  │ ArtifactReady│  │ Verified     │  │ ReportReady │           │
+│  └──────────────┘  └──────────────┘  └──────────────┘           │
+│  ┌──────────────┐  ┌──────────────┐                              │
+│  │ WaitingUser  │  │ UserResponse │                              │
+│  └──────────────┘  └──────────────┘                              │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+### 4.4 核心交互流
+
+```
+1. 用户输入 → 发布 UserInput 事件
+2. 上下文管理器订阅 → 处理 → 发布 ContextReady 事件
+3. 路由器订阅 → 判断复杂度 → 
+   - 简单：发布 ExecuteSimple 事件 → 模型封装(有线程)执行 → 发布 ArtifactReady
+   - 复杂：生成计划排期表 → 发布 ScheduleReady 事件
+4. 调度器订阅 ScheduleReady → 创建任务组实例(分配线程) → 任务组执行
+5. 任务组执行完成 → 发布 ArtifactReady
+6. 核验器订阅 → 核验 → 
+   - 通过：发布 Verified 事件
+   - 需用户确认：保存状态，发布 WaitingUser
+7. 用户反馈 → 发布 UserResponse 事件 → 核验器/任务组恢复执行
+8. 汇报器订阅 Verified → 生成报告 → 发布 ReportReady
+9. 展示器订阅 ReportReady + 任务进度事件 → 推送 Web Server → 用户
+```
+
+### 4.5 任务组状态机
+
+任务组使用状态机管理生命周期，支持暂停等待用户反馈后恢复执行：
+
+```
+IDLE ──(启动)──→ RUNNING ──(需要用户)──→ WAITING_USER
+                  ↑                      │
+                  │                      │(用户反馈)
+                  └──────────────────────┘
+                  │
+                  └──(完成)──→ COMPLETED
+                  │
+                  └──(失败)──→ FAILED
+```
+
+状态说明：
+- **IDLE**：初始状态，等待调度器分配
+- **RUNNING**：执行中，使用线程池并发处理子任务
+- **WAITING_USER**：暂停执行，保存状态，等待用户反馈
+- **COMPLETED**：所有子任务完成
+- **FAILED**：执行失败
+
+### 4.6 核验并发策略
+
+同一个计划排期表内的多个产物**可并行核验**，无需顺序保证。只要每个任务结果核验通过，整个计划排期表即视为核验通过。
+
+### 4.7 用户交互协议
+
+#### Agent → Web Server（事件发布）
+```json
+{
+    "type": "agent_event",
+    "trace_id": "trace-xxx",
+    "event": "schedule_created | task_started | task_completed | artifact_ready | verified | waiting_user_input | report_ready",
+    "data": {
+        "schedule_id": "...",
+        "task_id": "...",
+        "content": "..."
+    }
+}
+```
+
+#### Web Server → Agent（事件订阅）
+```json
+{
+    "type": "user_action",
+    "trace_id": "trace-xxx",
+    "action": "confirm_schedule | provide_info | cancel | modify_requirement",
+    "data": {
+        "target_id": "...",
+        "content": "..."
+    }
+}
+```
+
+### 4.8 可观测性
+
+每个请求携带唯一 `trace_id`，贯穿整个事件链路：
+
+```python
+@dataclass
+class Task:
+    task_id: str
+    trace_id: str              # 追踪 ID
+    started_at: float | None
+    finished_at: float | None
+    ...
+```
+
+各组件记录结构化日志，包含 `trace_id`、`schedule_id`、耗时等信息，便于调试和监控。
 
 ---
 
@@ -372,7 +452,13 @@ Web Server → 用户（流式推送）
 | 命名"模型调度器"→"调度器" | 采用 | 调度的是任务而非模型 |
 | 命名"工具管理器"→"能力管理器" | 采用 | 管理的不只是工具，还有 MCP 和 RAG |
 | Skill 放在哪里 | 独立的技能管理器 | Skill 是复合能力，与原子 Tool 分层管理 |
+| 架构模式 | 事件驱动架构（EDA） | 解耦组件，只有阻塞操作（模型调用）占用线程 |
 | 计划排期表作为枢纽 | 调度/核验/汇报/展示均依赖 | 统一追踪线索 |
+| 核验并发 | 同一计划排期表内可并行核验 | 按任务分割，每个结果独立核验即可 |
+| 用户交互 | 核验器被动触发，支持暂停/恢复 | 通过事件总线传递用户反馈 |
+| 上下文隔离 | 任务组上下文不并入顶层 | 任务完成后总结为产物，供演化机学习 |
+| 成本控制 | 配置文件设置预算，注入计划排期表 | 限制 token/深度/工具调用次数 |
+| 路由器误判恢复 | 用户可通过 flag 强制路由 | 允许用户覆盖自动判定 |
 
 ---
 
@@ -481,3 +567,188 @@ def run_command(cmd, timeout=300):
   参考 sandboxex 的 Docker 容器管理
   优先实现"长驻容器"模式（Agent 多轮对话主要场景）
 ```
+
+---
+
+## 8. 附录
+
+### 8.1 成本控制配置
+
+在计划排期表中增加预算字段：
+
+```python
+@dataclass
+class ScheduleSheet:
+    ...
+    max_depth: int = 3          # 最大递归深度
+    max_tokens: int = 100_000   # token 预算
+    max_tool_calls: int = 50    # 工具调用上限
+```
+
+### 8.2 用户交互 flag
+
+用户可在输入中附加特殊 flag 来强制路由：
+
+```python
+# 强制简单路径（跳过规划）
+"#simple 帮我翻译这段话"
+
+# 强制复杂路径（走完整规划流程）
+"#complex 帮我重构整个项目的模块结构"
+```
+
+### 8.3 上下文演化机
+
+任务组完成后，将上下文总结为产物复制到专用目录，为后续"演化机"提供学习进化的经验：
+
+```
+任务组完成
+  ↓
+上下文总结为经验产物
+  ↓
+复制到经验库目录
+  ↓
+演化机读取经验，用于后续优化
+```
+
+### 8.4 模型输出缓存机制
+
+#### 8.4.1 设计目的
+
+解决 LLM 不确定性导致的调试困难："同一问题，调试多次，模型输出每次都不一样"。仅用于开发和维护目的，不面向终端用户。
+
+#### 8.4.2 核心思路
+
+```
+开发模式（缓存启用）：
+  模型请求 → 缓存命中？ → 是 → 返回缓存结果（确定性）
+                          → 否 → 调用模型 → 存入缓存 → 返回
+
+生产模式（缓存禁用）：
+  模型请求 → 直接调用模型（不经过缓存）
+```
+
+#### 8.4.3 缓存 Key 设计
+
+缓存 Key 需精确匹配所有影响输出的参数：
+
+```python
+def make_cache_key(model: str, messages: list, tools: list | None, **kwargs) -> str:
+    import hashlib
+    import json
+    key_data = {
+        "cache_version": "v1",  # 版本号，变更时旧缓存全部失效
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        **kwargs
+    }
+    serialized = json.dumps(key_data, sort_keys=True)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+```
+
+#### 8.4.4 缓存存储结构
+
+```python
+@dataclass
+class CacheEntry:
+    key: str
+    model: str
+    request: dict           # 原始请求
+    response: dict          # 完整响应（含 tool_calls、usage 等）
+    created_at: float
+    expires_at: float | None  # None 表示永不过期
+```
+
+缓存目录结构：
+```
+.cache/
+├── responses/
+│   ├── {hash_key_1}.json    # 缓存的响应数据
+│   └── {hash_key_2}.json
+├── index.json                # 索引：key → 文件路径映射
+└── config.json              # 缓存配置
+```
+
+#### 8.4.5 与模型封装集成
+
+```python
+class ModelWrapper:
+    def __init__(self, ..., cache_enabled: bool = False, cache_dir: str = ".cache"):
+        ...
+        self.cache_enabled = cache_enabled
+        self.cache = ResponseCache(cache_dir) if cache_enabled else None
+
+    def chat(self, messages, tools=None, **kwargs):
+        # 仅缓存纯对话请求（无 tools），工具调用结果可能变化
+        if self.cache and tools is None:
+            key = self.cache.make_key(self.model, messages, tools, **kwargs)
+            if cached := self.cache.get(key):
+                return cached["response"]
+
+        # 正常调用模型
+        response = self.client.chat.completions.create(...)
+
+        if self.cache and tools is None:
+            self.cache.set(key, {
+                "model": self.model,
+                "request": {"messages": messages, **kwargs},
+                "response": response.model_dump(),
+                "created_at": time.time(),
+            })
+
+        return response
+```
+
+#### 8.4.6 调试命令
+
+```bash
+# 启用缓存模式运行
+python main.py --debug --cache
+
+# 清除所有缓存
+python main.py --debug --cache-clear
+
+# 指定缓存目录
+python main.py --debug --cache --cache-dir ./my-cache
+```
+
+#### 8.4.7 录制与回放模式（增强）
+
+除简单缓存外，支持完整执行过程的录制与回放：
+
+**录制模式**：
+```python
+agent.run(user_input, record_mode=True)
+# 生成 recording.json：
+# {
+#   "user_input": "...",
+#   "steps": [
+#     {"event": "model_call", "request": ..., "response": ...},
+#     {"event": "tool_call", "tool": "read_file", "args": ..., "result": ...},
+#     {"event": "model_call", "request": ..., "response": ...}
+#   ]
+# }
+```
+
+**回放模式**：
+```python
+agent.replay(recording_file="debug/recording_001.json")
+# 所有模型调用和工具调用都返回录制时的结果
+```
+
+**应用场景**：
+
+| 场景 | 模式 | 说明 |
+|------|------|------|
+| 模型输出调试 | 缓存模式 | 固定模型输出，排查业务逻辑 |
+| 完整流程调试 | 回放模式 | 固定模型+工具结果，复现完整场景 |
+| 回归测试 | 回放模式 | 确保代码修改不改变执行结果 |
+| 性能分析 | 回放模式 | 多次回放同一录制，测量耗时 |
+
+#### 8.4.8 注意事项
+
+1. **仅开发使用**：生产环境必须确保 `cache_enabled = False`
+2. **仅缓存纯对话**：工具调用请求不缓存，因工具结果可能随时变化
+3. **敏感信息保护**：缓存中可能包含用户数据和 API Key，需确保缓存目录的访问权限
+4. **缓存版本管理**：当 prompt 模板、模型版本变更时，通过 `cache_version` 字段使旧缓存失效
