@@ -30,7 +30,7 @@
 | once / strict / 双轨同步异步 | once=True 订阅 + strict 默认严格模式 + 同步 publish。异步 `publish_async` 本轮不做（后续需要再加）。 |
 
 ### 2.2 对象/事件 仓库结构（唯一定义，不再加其他 map）
-严格按用户 D 的原话。EventBus 内**只有两个独立 map**（内部全部用 `threading.RLock` 保护）：
+严格按用户的原话。EventBus 内**只有两个独立 map**（内部全部用 `threading.RLock` 保护）：
 
 ```python
 # map 1：对象仓库。对象生命周期内一直存在，remove_object 才删除。
@@ -64,18 +64,21 @@ _events: dict[str, Event]
   - `>`：匹配从当前位置开始的**所有后续层级**，只能出现在 pattern 的**最后一位**
   - pattern 含 `>` 但不在末尾 → `ValueError` 拒绝订阅
 
-### 2.4 Event dataclass（最少暴露 6 字段）
+### 2.4 Event dataclass（9 字段，前 4 层独立暴露）
 ```python
 @dataclass
 class Event:
     event_id: str                # 空时 _publish_internal 自动生成：毫秒_UUID4
     trace_id: str                # 链路追踪 ID，必填（空则自动生成 UUID4）
-    topic: str                   # 完整 5 层主题字符串，订阅 pattern 匹配用
-    event_type: str              # topic 最后一层（冗余保留，handler 方便取，仅此一个类型字段，不再拆分 kind/event_type）
+    user_id: str                 # 5 层主题第 1 层
+    session_id: str              # 5 层主题第 2 层
+    conversation_id: str         # 5 层主题第 3 层
+    object_id: str               # 5 层主题第 4 层
+    event_type: str              # 5 层主题第 5 层（仅此一个类型字段，不再拆分 kind/event_type）
     data: Any = None             # 完整载荷。框架原样透传，由调用方 & handler 自定内容
     timestamp: float = field(default_factory=time.time)
 ```
-> 说明：user_id / session_id / conversation_id / object_id 前 4 层**不单独作为 Event 字段暴露**，需要时 handler 从 `event.topic.split(".")` 自行取，或从 `_objects[object_id][1]` 的 metadata 里取——符合「暴露越少越好」原则。
+> 说明：前 4 层作为独立字段直接暴露，handler 直接取 `event.user_id` 等，**无需 split 字符串消耗 CPU**。匹配 pattern 时由 `_publish_internal` 内部拼一次 topic 字符串用于通配符匹配。
 
 ### 2.5 ID 生成格式（毫秒_UUID4 无横杠）
 正则：`^\d{13}_[0-9a-f]{32}$`
@@ -175,7 +178,7 @@ publish 生命周期：
   【前置】
     1. event_id 为空 → 自动生成（毫秒_UUID4）
     2. trace_id 为空 → 自动生成 UUID4
-    3. event.topic / event.event_type 如未填 → 从上下文构造
+    3. 从 event 的 user_id/session_id/conversation_id/object_id/event_type 拼出 topic 字符串（用于 pattern 匹配）
     4. 事件实例存入 _events map
     5. 从 _chains[event.event_type] 取 (before_list, after_list)，未注册用空列表
 
@@ -209,21 +212,22 @@ publish 生命周期：
 ## 三、实现范围与文件结构
 
 ### 3.1 新文件清单
-本轮新增一个独立包 `events/`（与 `config/` 并列，放项目根）：
+本轮新增一个独立包 `agent/event_bus/`（在 agent 包下）：
 
 ```
 xuyuanji/
+├─ agent/                          # 本轮新增：Agent 核心包
+│   └─ event_bus/                  # 事件总线子包
+│       ├─ __init__.py             # re-export 公共 API（Event、EventBus、generate_id）
+│       └─ bus.py                  # EventBus 类 + Event dataclass + 匹配/ID 辅助
 ├─ config/                         # 上一轮公共配置（已存在）
 │   ├─ __init__.py
 │   └─ loader.py
-├─ events/                         # 本轮新增：事件总线公共包
-│   ├─ __init__.py                 # re-export 公共 API（Event、EventBus、各种便捷函数）
-│   └─ bus.py                      # EventBus 类 + Event dataclass + 匹配/ID 辅助
 └─ main_body/
     └─ server_main.py              # 后续接入时 import
 ```
 
-### 3.2 `events/__init__.py` 内容（约定）
+### 3.2 `agent/event_bus/__init__.py` 内容（约定）
 ```python
 from .bus import Event, EventBus, generate_id
 
@@ -231,12 +235,12 @@ __all__ = ["Event", "EventBus", "generate_id"]
 ```
 后续其他模块两种 import 等价：
 ```python
-from events.bus import EventBus
+from agent.event_bus.bus import EventBus
 # 或
-from events import EventBus
+from agent.event_bus import EventBus
 ```
 
-### 3.3 `events/bus.py` 代码骨架（精确到实现）
+### 3.3 `agent/event_bus/bus.py` 代码骨架（精确到实现）
 ```python
 """
 EventBus：事件驱动核心组件
@@ -270,13 +274,16 @@ SubHandler = Callable[[str, "Event"], None]
 
 
 # ==============================================================================
-# Event：最少 6 字段，对外暴露
+# Event：9 字段，前 4 层独立暴露（无需 split 消耗 CPU）
 # ==============================================================================
 @dataclass
 class Event:
     event_id: str
     trace_id: str
-    topic: str
+    user_id: str
+    session_id: str
+    conversation_id: str
+    object_id: str
     event_type: str
     data: Any = None
     timestamp: float = field(default_factory=time.time)
@@ -345,19 +352,13 @@ class EventBus:
         # 所有 pattern segment 匹配完毕且长度也相同
         return i == len(t_segs)
 
-    # ---------- metadata 辅助（register_object 写，update/trigger 读）----------
-    def _build_topic_from_meta(self, object_id: str, event_type: str) -> str:
-        """从 _objects[object_id][1] 的 metadata 拼出完整 5 层 topic + event_type。"""
+    # ---------- metadata 辅助（register_object 写，update 读）----------
+    def _get_meta_fields(self, object_id: str) -> tuple[str, str, str]:
+        """从 _objects[object_id][1] 的 metadata 取回 user_id, session_id, conversation_id。"""
         if object_id not in self._objects:
             raise KeyError(f"[EventBus] _objects 中不存在 object_id={object_id}，请先 register_object")
         meta = self._objects[object_id][1]
-        return ".".join([
-            meta["_user_id"],
-            meta["_session_id"],
-            meta["_conversation_id"],
-            meta["_object_id"],
-            event_type,
-        ])
+        return meta["_user_id"], meta["_session_id"], meta["_conversation_id"]
 
     # ----------------------------------------------------------------------
     # 公共 API 1/3：register_event（链条，追加模式）
@@ -410,11 +411,13 @@ class EventBus:
             "_conversation_id": conversation_id,
             "_object_id":       object_id,
         }
-        topic = ".".join([user_id, session_id, conversation_id, object_id, "idle"])
         event = Event(
             event_id=self._generate_id(),
             trace_id=self._ensure_trace(trace_id),
-            topic=topic,
+            user_id=user_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            object_id=object_id,
             event_type="idle",
             data=data,
         )
@@ -432,11 +435,14 @@ class EventBus:
         trace_id: str | None = None,
     ) -> None:
         with self._lock:
-            topic = self._build_topic_from_meta(object_id, event_type)
+            user_id, session_id, conversation_id = self._get_meta_fields(object_id)
         event = Event(
             event_id=self._generate_id(),
             trace_id=self._ensure_trace(trace_id),
-            topic=topic,
+            user_id=user_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            object_id=object_id,
             event_type=event_type,
             data=data,
         )
@@ -459,11 +465,13 @@ class EventBus:
         trace_id: str | None = None,
     ) -> None:
         """不触碰对象数据的纯事件触发（心跳 / 聚合自定义事件等）。"""
-        topic = ".".join([user_id, session_id, conversation_id, object_id, event_type])
         event = Event(
             event_id=self._generate_id(),
             trace_id=self._ensure_trace(trace_id),
-            topic=topic,
+            user_id=user_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            object_id=object_id,
             event_type=event_type,
             data=data,
         )
@@ -491,7 +499,11 @@ class EventBus:
     # 内部 publish 流程（私有，对象 API 自动调）
     # ----------------------------------------------------------------------
     def _publish_internal(self, event: Event) -> None:
-        # 前置：存入 _events（无论是否异常，finally 会清）
+        # 前置：拼一次 topic 字符串（用于 pattern 匹配）+ 存入 _events
+        topic = ".".join([
+            event.user_id, event.session_id,
+            event.conversation_id, event.object_id, event.event_type,
+        ])
         with self._lock:
             self._events[event.event_id] = event
 
@@ -516,10 +528,10 @@ class EventBus:
 
             # ② 自动发布：分发给所有匹配 pattern 的订阅者
             for pattern, h_sub, once in subs_snap:
-                if not self._match_topic(pattern, event.topic):
+                if not self._match_topic(pattern, topic):
                     continue
                 try:
-                    h_sub(event.topic, event)
+                    h_sub(topic, event)
                 except Exception:
                     if self._strict:
                         raise
@@ -566,7 +578,7 @@ def generate_id() -> str:
 | T3 | EventBus._objects 结构严格为 `{oid: [data, meta]}` | register_object 后，get_object_with_meta 返回 [data, dict]；meta 必含 4 个下划线元数据键且值与入参一致 |
 | T4 | EventBus._events 结构 = `{eid: Event}` | publish 进行中 handler 内可从 bus._events[eid] 取回；publish 结束后（finally）必已删除 |
 | T5 | RLock 并发安全：10 线程并发 register_object + update_object 50 次 | 最终 _objects 数量与预期一致；无 KeyError / RuntimeError；元数据键不丢失 |
-| T6 | Event dataclass 字段只有 6 个且不含 kind / 单独前 4 层字段 | 反射 `Event.__dataclass_fields__` 集合 == `{event_id, trace_id, topic, event_type, data, timestamp}` |
+| T6 | Event dataclass 字段共 9 个且不含 kind / topic | 反射 `Event.__dataclass_fields__` 集合 == `{event_id, trace_id, user_id, session_id, conversation_id, object_id, event_type, data, timestamp}` |
 
 ### 4.2 处理链条（T7-T11）
 | 编号 | 验证点 | 预期 |
@@ -607,7 +619,7 @@ def generate_id() -> str:
 | **data 类型限制** | data 位置 0 可以是**任意类型**（dict/list/str/int...），不强制 dict，无保留键冲突 |
 | 5 层主题顺序 | `user . session . conversation . object . event_type` |
 | 分隔符 / 通配符 | `.` 分隔；`*` 单层；`>` 仅末尾；`>` 非法位置 ValueError |
-| Event 字段数量 | 6 个（event_id/trace_id/topic/event_type/data/timestamp）；**不再拆分 event_type+kind**；前 4 层不单独暴露 |
+| Event 字段数量 | 9 个（event_id/trace_id/user_id/session_id/conversation_id/object_id/event_type/data/timestamp）；**不再拆分 event_type+kind**；前 4 层独立暴露，无需 split |
 | ID 格式 | `毫秒_UUID4无横杠`，天然字符串排序 = 时间排序 |
 | register_event 策略 | **追加模式，形成处理链条**；无覆盖；启动期静态注册 |
 | 链条 Handler 签名 | `Handler = (bus, event) -> None`（需要改仓库所以给 bus） |
