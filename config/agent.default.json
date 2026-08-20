@@ -23,6 +23,13 @@
   },
   "logging": {
     "level": "INFO",
-    "trace_enabled": true
+    "trace_enabled": true,
+    "log_dir": "logs",
+    "enable_total_file": true,
+    "enable_component_files": true,
+    "enable_warning_file": true,
+    "enable_console": true,
+    "max_bytes": 10485760,
+    "backup_count": 5
   }
 }
