@@ -31,5 +31,9 @@
     "enable_console": true,
     "max_bytes": 10485760,
     "backup_count": 5
+  },
+  "db": {
+    "path": "data/agent.db",
+    "journal_mode": "WAL"
   }
 }
