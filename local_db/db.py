@@ -72,6 +72,29 @@ class LocalDB:
             );
             CREATE INDEX IF NOT EXISTS idx_rec_cid ON records(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_rec_cid_type ON records(conversation_id, type);
+
+            CREATE TABLE IF NOT EXISTS compressed_contexts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT    NOT NULL UNIQUE,
+                trace_id        TEXT    NOT NULL,
+                summary         TEXT    NOT NULL,
+                message_count   INTEGER NOT NULL,
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cc_cid ON compressed_contexts(conversation_id);
+
+            CREATE TABLE IF NOT EXISTS specialized_contexts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT    NOT NULL,
+                message_id      INTEGER NOT NULL,
+                trace_id        TEXT    NOT NULL,
+                messages        TEXT    NOT NULL,
+                retrieval_method TEXT   NOT NULL,
+                created_at      TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sc_cid ON specialized_contexts(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_sc_mid ON specialized_contexts(message_id);
         """)
         self._conn.commit()
 
@@ -218,6 +241,70 @@ class LocalDB:
                 d["data"] = json.loads(d["data"])
                 result.append(d)
             return result
+
+    # ========================================================================
+    # compressed_contexts
+    # ========================================================================
+    def save_compressed_context(
+        self,
+        conversation_id: str,
+        trace_id: str,
+        summary: str,
+        message_count: int,
+    ) -> None:
+        """插入或更新压缩上下文（UPSERT，conversation_id 为 UNIQUE）。"""
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO compressed_contexts (conversation_id, trace_id, summary, message_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "trace_id=excluded.trace_id, summary=excluded.summary, "
+                "message_count=excluded.message_count, updated_at=excluded.updated_at",
+                (conversation_id, trace_id, summary, message_count, now, now),
+            )
+            self._conn.commit()
+
+    def get_compressed_context(self, conversation_id: str) -> str | None:
+        """读取压缩上下文摘要，无则 None。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT summary FROM compressed_contexts WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()
+            return row[0] if row else None
+
+    # ========================================================================
+    # specialized_contexts
+    # ========================================================================
+    def save_specialized_context(
+        self,
+        conversation_id: str,
+        message_id: int,
+        trace_id: str,
+        messages: str,
+        retrieval_method: str,
+    ) -> int:
+        """保存专用上下文，返回自增 id。messages 为 JSON 字符串。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO specialized_contexts (conversation_id, message_id, trace_id, messages, retrieval_method, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (conversation_id, message_id, trace_id, messages, retrieval_method, _now()),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_specialized_context(self, message_id: int) -> list[dict] | None:
+        """按 message_id 读取专用上下文，返回消息列表，无则 None。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT messages FROM specialized_contexts WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
 
     # ========================================================================
     # 生命周期

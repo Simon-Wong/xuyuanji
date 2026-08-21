@@ -4,7 +4,8 @@
     "planner": "qwen-plus",
     "selector": "qwen-turbo",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "api_key_env": "DASHSCOPE_API_KEY"
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "max_context_tokens": 32768
   },
   "cache": {
     "enabled": false,
@@ -35,5 +36,19 @@
   "db": {
     "path": "data/agent.db",
     "journal_mode": "WAL"
+  },
+  "context": {
+    "compress_threshold": {
+      "type": "message_count",
+      "value": 20
+    },
+    "recent_messages": {
+      "type": "count",
+      "value": 6
+    }
+  },
+  "token_counter": {
+    "impl": "rough",
+    "model": "qwen-plus"
   }
 }
