@@ -1,11 +1,54 @@
 {
-  "model": {
-    "default": "qwen-plus",
-    "planner": "qwen-plus",
-    "selector": "qwen-turbo",
-    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "api_key_env": "DASHSCOPE_API_KEY",
-    "max_context_tokens": 32768
+  "providers": {
+    "Commercial": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    "Ollama": {
+      "base_url": "http://localhost:11434/v1",
+      "api_key_env": null
+    },
+    "vLLM": {
+      "base_url": "http://localhost:8000/v1",
+      "api_key_env": null
+    }
+  },
+  "models": {
+    "default": {
+      "provider": "Commercial",
+      "model": "qwen-plus",
+      "type": "chat",
+      "max_context_tokens": 32768
+    },
+    "planner": {
+      "provider": "Commercial",
+      "model": "qwen-plus",
+      "type": "chat",
+      "max_context_tokens": 32768
+    },
+    "selector": {
+      "provider": "Commercial",
+      "model": "qwen-turbo",
+      "type": "chat",
+      "max_context_tokens": 32768
+    },
+    "local-chat": {
+      "provider": "Ollama",
+      "model": "qwen2.5:7b",
+      "type": "chat",
+      "max_context_tokens": 8192
+    },
+    "local-embed": {
+      "provider": "Ollama",
+      "model": "nomic-embed-text",
+      "type": "embedding",
+      "max_context_tokens": 8192
+    }
+  },
+  "model_wrapper": {
+    "auto_execute_tools": true,
+    "max_tool_calls": 10,
+    "max_retries": 3
   },
   "cache": {
     "enabled": false,

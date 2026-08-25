@@ -95,6 +95,12 @@ class LocalDB:
             );
             CREATE INDEX IF NOT EXISTS idx_sc_cid ON specialized_contexts(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_sc_mid ON specialized_contexts(message_id);
+
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id     TEXT PRIMARY KEY,
+                profile     TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
         """)
         self._conn.commit()
 
@@ -305,6 +311,29 @@ class LocalDB:
             if row is None:
                 return None
             return json.loads(row[0])
+
+    # ========================================================================
+    # user_profiles
+    # ========================================================================
+    def save_user_profile(self, user_id: str, profile: str) -> None:
+        """插入或更新用户画像（UPSERT，user_id 为 PRIMARY KEY）。"""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO user_profiles (user_id, profile, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "profile=excluded.profile, updated_at=excluded.updated_at",
+                (user_id, profile, _now()),
+            )
+            self._conn.commit()
+
+    def get_user_profile(self, user_id: str) -> str | None:
+        """读取用户画像，无则 None。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT profile FROM user_profiles WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            return row[0] if row else None
 
     # ========================================================================
     # 生命周期
