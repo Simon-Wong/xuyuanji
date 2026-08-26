@@ -151,7 +151,7 @@ class Actor:
                     one=(idx,detail,'y',"默认允许")
                     tmplist.append(one)
 
-                    return 1,f"需要审批的工具调用。请检查并批准或拒绝。",tmplist
+                return 1,f"需要审批的工具调用。请检查并批准或拒绝。",tmplist
             final_output=self.result.final_output
             return 0,final_output,[]
 
@@ -214,7 +214,7 @@ class Actor:
                     one=(idx,detail,'y',"默认允许")
                     tmplist.append(one)
 
-                    return 1,f"需要审批的工具调用。请检查并批准或拒绝。",tmplist
+                return 1,f"需要审批的工具调用。请检查并批准或拒绝。",tmplist
             final_output=self.result.final_output
             return 0,final_output,[]
 
