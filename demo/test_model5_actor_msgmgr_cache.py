@@ -6,6 +6,9 @@ from openai_agents_providers import OllamaProvider
 from typing import Annotated, Literal,Any
 from pydantic import Field,BaseModel
 
+import json
+
+
 set_tracing_disabled(True)
 
 class ModelStore:
@@ -81,9 +84,51 @@ global_message_manager = MessageManager()
 
 
 class CacheManager:
-    def __init__(self):
-        pass
+    #调试用
+    #保存dict[str:str]，并以json的形式保存到磁盘。
+    cache:dict[str:str]
+    pathfile:str
 
+    def __init__(self):
+        self.pathfile="cache.json"
+        self.cache={}
+        self._load_cache(self.pathfile)
+
+    def _load_cache(self,filepath:str):      
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.rstrip('\n')
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            self.cache.update(obj)
+                    except json.JSONDecodeError:
+                        # 忽略损坏的行（可记录日志）
+                        continue
+
+    def _append_cache(self,q:str,a:str):
+        #追加式写入, q和a占一行
+        tmp={q:a}
+        with open(self.pathfile,"a",encoding="utf-8") as f:
+            json.dump(tmp,f,ensure_ascii=False)
+            f.write("\n")
+
+    def set(self,q:str,a:str):    
+        tmp=self.cache.get(q)
+        if tmp is None:
+            self.cache[q]=a
+            self._append_cache(q,a)
+    
+    def get(self,q:str)->str:
+        tmp=self.cache.get(q)
+        if tmp is None:
+            return None
+        print(f"<cache hit>")
+        return tmp
+       
 
 # 1. 定义需要审批的工具
 #    通过 needs_approval=True 标记该工具执行前需要人工批准
@@ -125,8 +170,11 @@ CheckList=Annotated[list[tuple[int,str,Literal['y','n'],str]],Field(description=
 class Actor:
     agent: Agent
     run_config: RunConfig
-    result: RunResult
+    result: RunResult#内部变量
     msghis: MsgHis
+    cache:CacheManager
+    last_input:InputStr
+    debug_need_same_answer:bool
 
     def __init__(self, agent: Agent, run_config: RunConfig,msghis:MsgHis):
         self.agent = agent
@@ -134,10 +182,37 @@ class Actor:
         self.state = None
         self.result = None
         self.msghis=msghis
+        self.cache=None
+        self.last_input=None
+        self.debug_need_same_answer=False
+
     def set_msghis(self,msghis:MsgHis):
         self.msghis=msghis
     def get_msghis(self)->MsgHis:
-        return self.result.to_input_list()
+        return self.msghis#self.result.to_input_list()
+
+    def set_debug_need_same_answer(self,flag:bool):
+        self.debug_need_same_answer=flag
+        if flag==True:
+            self.cache=CacheManager()
+        else:
+            self.cache=None
+
+    def _set_last_input(self,last_input:InputStr):
+        self.last_input=last_input
+    
+    def _get_last_input(self)->InputStr:
+        return self.last_input
+
+    def _make_role_input(self,role:Role,input:InputStr)->str:
+        if role == "user":
+            msg = {"role": "user", "content": input}
+        elif role == "assistant":
+            msg = {"role": "assistant", "content": input}
+        elif role == "system":
+            msg = {"role": "system", "content": input}
+
+        return msg
 
     def _collect_interruptions(self) -> CheckList:
         """从 self.result.interruptions 收集所有待审批项，返回 Checklist"""
@@ -156,16 +231,26 @@ class Actor:
         return tmplist
 
     async def play(self, role: Role = None, input: InputStr = None, checklist: CheckList = None) -> tuple[int, str, CheckList]:
+        if self.debug_need_same_answer==True:
+            if input is not None:
+                self._set_last_input(input)
+
+            # 从缓存中获取结果
+            cache_result=self.cache.get(input)
+            if cache_result is not None:
+                #伪造聊天记录
+                msg_user = self._make_role_input(role,input)
+                self.msghis.append(msg_user)
+                msg_assistant=self._make_role_input("assistant",cache_result)
+                self.msghis.append(msg_assistant)
+
+                return 0, cache_result, []
+
         if checklist is None and role is not None and input is not None:
             # 开始新的运行          
-            if role == "user":
-                msg = {"role": "user", "content": input}
-            elif role == "assistant":
-                msg = {"role": "assistant", "content": input}
-            elif role == "system":
-                msg = {"role": "system", "content": input}
+            msg = self._make_role_input(role,input)
             self.msghis.append(msg)
-            
+
             self.result = await Runner.run(self.agent, input=self.msghis, run_config=self.run_config)
             self.msghis = self.result.to_input_list()
 
@@ -173,7 +258,12 @@ class Actor:
                 self.state = self.result.to_state()
                 tmplist = self._collect_interruptions()
                 return 1, "需要审批的工具调用。请检查并批准或拒绝。", tmplist
+            
             final_output = self.result.final_output
+
+            if self.debug_need_same_answer==True:
+                self.cache.set(self._get_last_input(),final_output)
+
             return 0, final_output, []
 
         elif role is None and input is None and checklist is not None:
@@ -200,6 +290,10 @@ class Actor:
                 return 1, "需要审批的工具调用。请检查并批准或拒绝。", tmplist
             
             final_output = self.result.final_output
+
+            if self.debug_need_same_answer==True:
+                self.cache.set(self._get_last_input(),final_output)
+
             return 0, final_output, []
 
         else:
@@ -237,9 +331,12 @@ async def Test2():
     msghis=global_message_manager.get_messages("test_user_1","session_1")
 
     actor=Actor(agent,run_config,msghis)
+    actor.set_debug_need_same_answer(True)
+
+    print(f"{'='*50}第1组问题{'='*50}")
 
     for i, question in enumerate(questions1, 1):
-        print(f"\n{'='*40} 第 {i} 轮 {'='*40}")
+        print(f"\n{'='*10} 第 {i} 轮 {'='*10}")
         print(f"用户: {question}")
     
         flag,text,checklist=await actor.play(role="user",input=question)
@@ -253,10 +350,10 @@ async def Test2():
     msghis=actor.get_msghis()
     actor.set_msghis(msghis)
 
-    print("="*20)
+    print(f"{'='*50}第2组问题{'='*50}")
 
     for i, question in enumerate(questions2, 1):
-        print(f"\n{'='*40} 第 {i} 轮 {'='*40}")
+        print(f"\n{'='*10} 第 {i} 轮 {'='*10}")
         print(f"用户: {question}")
     
         flag,text,checklist=await actor.play(role="user",input=question)
@@ -265,10 +362,30 @@ async def Test2():
         
             flag,text,checklist=await actor.play(checklist=checklist)
         print(f"\n助手: {text}")
+
+async def Test3():
+    cachemgr=CacheManager(is_debug=True)
+    cachemgr.set("q1","a1")
+    cachemgr.set("q2","a2")
+    cachemgr.set("q3","a3")
+    cache=cachemgr.get("q2")
+    print(cache)
+
+async def Test4():
+    cachemgr=CacheManager(is_debug=True)
+    cachemgr.set("q1","a1")
+    cachemgr.set("q3","a3")
+    cache=cachemgr.get("q2")
+    print(cache)
+
+
 async def main():
     initialize()
     #await Test1()
     await Test2()
+
+    #await Test3()
+    #await Test4()
 
 if __name__ == "__main__":
     asyncio.run(main())
