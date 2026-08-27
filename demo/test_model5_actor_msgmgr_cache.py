@@ -347,7 +347,9 @@ async def Test2():
         print(f"\n助手: {text}")
 
     #模拟外部修改了历史
+    print(f"{'='*50}模拟外部修改了历史{'='*50}")
     msghis=actor.get_msghis()
+    print(msghis)
     actor.set_msghis(msghis)
 
     print(f"{'='*50}第2组问题{'='*50}")
