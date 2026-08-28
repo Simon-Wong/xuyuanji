@@ -1,6 +1,6 @@
 from agents import function_tool
 
-@function_tool
+@function_tool(needs_approval=True)
 def get_todays_news(topic: str = "科技") -> str:
     """获取今日新闻（模拟）"""
     news_db = {

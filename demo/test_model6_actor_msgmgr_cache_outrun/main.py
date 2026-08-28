@@ -1,6 +1,7 @@
 import asyncio
 import os
 from agents import Agent, Runner, RunConfig, function_tool, set_tracing_disabled,RunResult,TResponseInputItem
+from agents import RunItem
 from openai_agents_providers import OllamaProvider
 
 from typing import Annotated, Literal,Any
@@ -135,20 +136,6 @@ class CacheManager:
         return tmp
        
 
-# 1. 定义需要审批的工具
-#    通过 needs_approval=True 标记该工具执行前需要人工批准
-@function_tool(needs_approval=True)  # <--- 关键点
-def get_weather(city: str) -> str:
-    """查询指定城市的当前天气（模拟数据）。"""
-    weather_db = {
-        "北京": "晴朗，25°C",
-        "上海": "多云，28°C",
-        "广州": "雷阵雨，32°C",
-        "深圳": "晴转多云，30°C"
-    }
-    return weather_db.get(city, f"抱歉，没有 {city} 的天气数据。")
-
-
 env_model=os.getenv("MODEL_NAME", "qwen3:4b")
 env_base_url=os.getenv("PROVIDER_URL", "http://192.168.0.119:11434/v1")
 
@@ -160,9 +147,21 @@ def initialize():
             "当用户询问任何城市的天气时，你可以调用适当工具来获取数据。\n"
             "如果用户问与天气无关的问题，直接回答：'我是天气助手，只回答天气问题。'"
             "不能伪造任何结果，不知道或者无法调用工具请直接回复原因。"),
-        tools=[get_weather],
+        tools=all_tools,
     )
     global_agent_store.register_agent(agent)
+
+    agent2 = Agent(
+        name="天气助手2",
+        instructions=(
+            "你是一个天气预报助手，名字叫小云。\n"
+            "当用户询问任何城市的天气时，你可以调用适当工具来获取数据。\n"
+            "如果用户问与天气无关的问题，直接回答：'我是天气助手，只回答天气问题。'"
+            "不能伪造任何结果，不知道或者无法调用工具请直接回复原因。"),
+        tools=all_tools,
+    )
+    global_agent_store.register_agent(agent2)
+
 
 Role=Annotated[Literal["user", "assistant", "system"],Field(description="消息角色，仅支持 user/assistant/system")]
 InputStr=Annotated[str,Field(description="输入的消息内容")]
@@ -191,7 +190,7 @@ class Actor:
         self.msghis=msghis
         self.cache=None
         self.last_input=None
-        self.debug_need_same_answer=False
+        self.debug_need_same_answer=user_config.debug_need_same_answer
         self.user_config=user_config
 
     def set_msghis(self,msghis:MsgHis):
@@ -233,12 +232,16 @@ class Actor:
                 if hasattr(interruption, attr):
                     arg_value = getattr(interruption, attr)
                     break
-            detail = f"工具: {interruption.tool_name} 参数: {arg_value}"
+            tool_name = interruption.tool_name
+            tool_param = arg_value
+            call_id=interruption.call_id
+            detail=(call_id,tool_name,tool_param)
             one = (idx, detail, 'y', "默认允许")
             tmplist.append(one)
-        return tmplist
+        return tmplist     
 
     async def play(self, role: Role = None, input: InputStr = None, checklist: CheckList = None) -> tuple[int, str, CheckList]:
+        #调试用，直接返回缓存结果
         if self.debug_need_same_answer==True:
             if input is not None:
                 self._set_last_input(input)
@@ -254,8 +257,7 @@ class Actor:
 
                 return 0, cache_result, []
 
-        if checklist is None and role is not None and input is not None:
-            # 开始新的运行          
+        if checklist is None and role is not None and input is not None:# 开始新的运行            
             msg = self._make_role_input(role,input)
             self.msghis.append(msg)
 
@@ -263,7 +265,7 @@ class Actor:
             self.msghis = self.result.to_input_list()
 
             if self.result.interruptions:
-                self.state = self.result.to_state()
+                #self.state = self.result.to_state()
                 tmplist = self._collect_interruptions()
                 return 1, "需要审批的工具调用。请检查并批准或拒绝。", tmplist
             
@@ -274,26 +276,56 @@ class Actor:
 
             return 0, final_output, []
 
-        elif role is None and input is None and checklist is not None:
-            # 继续上次因审批而打断的运行
+        elif role is None and input is None and checklist is not None:# 继续上次因审批而打断的运行
             for idx, detail, decision, reason in checklist:
+                tc_id=detail[0]
+                tc_name=detail[1]
+                tc_args=detail[2]
+
                 if decision == 'y':
-                    self.state.approve(self.result.interruptions[idx])
+                    #self.state.approve(self.result.interruptions[idx])
                     print(f"<{idx}> {detail} 审批：通过")
+                    #尝试运行多次
+                    for idx_time in range(self.user_config.max_turns_try_function):
+                        tool_func=tool_map.get(tc_name)
+                        if tool_func is not None:
+                            try:
+                                args=json.loads(tc_args)
+                                result_data=tool_func(**args)
+                                print(f"工具执行结果: {result_data}")
+                            except Exception as e:
+                                result_data = f"工具执行出错: {e}"
+                                print(result_data)
+                            self.msghis.append({"call_id": tc_id,
+                                                "output": result_data,
+                                                "type": "function_call_output"
+                                            })
+                            break
+                        else:
+                            print(f"未知工具 {tc_name}，跳过。")
+                            self.msghis.append({"call_id": tc_id,
+                                                "output": f"错误：未知工具 {tc_name}",
+                                                "type": "function_call_output"
+                                            })
+                            
                 else:
-                    self.state.reject(self.result.interruptions[idx], reason)
+                    #self.state.reject(self.result.interruptions[idx], reason)
                     print(f"<{idx}> {detail} 审批：拒绝 原因:{reason}")
+                    self.msghis.append({"call_id": tc_id,
+                                    "output": "用户拒绝了该工具调用。请不要再尝试调用该工具。",
+                                    "type": "function_call_output"
+                                })
 
             print("\n恢复运行...")
             self.result = await Runner.run(
                 self.agent,
-                self.state,  # 传入状态
+                self.msghis,#self.state,  # 传入状态
                 run_config=self.run_config,
             )
             self.msghis = self.result.to_input_list()
 
             if self.result.interruptions:
-                self.state = self.result.to_state()
+                #self.state = self.result.to_state()
                 tmplist = self._collect_interruptions()
                 return 1, "需要审批的工具调用。请检查并批准或拒绝。", tmplist
             
@@ -310,7 +342,7 @@ class Actor:
 async def Test1():
     provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
-    _,agent,_=global_agent_store.get_agent("天气助手")
+    _,agent,_=global_agent_store.get_agent("天气助手2")
     msghis=global_message_manager.get_messages("test_user_1","session_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
 
@@ -341,7 +373,7 @@ async def Test2():
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
 
     actor=Actor(agent,run_config,msghis,user_cfg)
-    actor.set_debug_need_same_answer(True)
+    actor.set_debug_need_same_answer(False)
 
     print(f"{'='*50}第1组问题{'='*50}")
 
