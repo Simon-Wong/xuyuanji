@@ -7,7 +7,7 @@ from typing import Annotated, Literal,Any
 from pydantic import Field,BaseModel
 import json
 
-from config import UserConfig
+from configuration import UserConfig
 
 from tools import load_tools_from_folder
 all_tools,tool_map = load_tools_from_folder()
@@ -183,7 +183,7 @@ class Actor:
     last_input:InputStr
     debug_need_same_answer:bool
 
-    def __init__(self, agent: Agent, run_config: RunConfig,msghis:MsgHis):
+    def __init__(self, agent: Agent, run_config: RunConfig,msghis:MsgHis,user_config:UserConfig):
         self.agent = agent
         self.run_config = run_config
         self.state = None
@@ -192,6 +192,7 @@ class Actor:
         self.cache=None
         self.last_input=None
         self.debug_need_same_answer=False
+        self.user_config=user_config
 
     def set_msghis(self,msghis:MsgHis):
         self.msghis=msghis
@@ -311,8 +312,9 @@ async def Test1():
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("天气助手")
     msghis=global_message_manager.get_messages("test_user_1","session_1")
+    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
 
-    actor=Actor(agent,run_config,msghis)
+    actor=Actor(agent,run_config,msghis,user_cfg)
     flag,text,checklist=await actor.play(role="user",input="北京今天天气怎么样？")
     while flag==1:
         #处理checklist
@@ -336,8 +338,9 @@ async def Test2():
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("天气助手")
     msghis=global_message_manager.get_messages("test_user_1","session_1")
+    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
 
-    actor=Actor(agent,run_config,msghis)
+    actor=Actor(agent,run_config,msghis,user_cfg)
     actor.set_debug_need_same_answer(True)
 
     print(f"{'='*50}第1组问题{'='*50}")

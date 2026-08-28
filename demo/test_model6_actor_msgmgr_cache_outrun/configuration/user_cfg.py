@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields
 
 @dataclass
 class UserConfig:
+    '''用户配置'''
     user_id:str|None=None
     session_id:str|None=None # 会话id，默认None
     config_file_name:str|None=None # 配置文件名，默认None
