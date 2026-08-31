@@ -1,4 +1,7 @@
 {
     "debug_need_same_answer": false,
-    "max_turns_try_function": 3
+    "max_turns_try_function": 3,
+    "work_dir": "default_work_dir",
+    "output_dir": "default_output_dir",
+    "save_dir":"default_save_dir"
 }
