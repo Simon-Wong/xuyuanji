@@ -7,11 +7,12 @@
 
 import os
 import sys
+import json
 from pathlib import Path
 ROOT_DIR=Path(__file__).parent.parent
-#print(ROOT_DIR)
+print(ROOT_DIR)
 sys.path.append(str(ROOT_DIR))
-from config import load_config, get_config
+from web_server.configuration import load_config, get_config
 
 import asyncio
 import logging
@@ -36,12 +37,12 @@ import uvicorn
 
 # ---------------------------------------------------------------------------
 # 配置加载（公共 loader：default.json -> user.json 深合并 -> 环境变量字段级覆盖）
-# 配置文件位置：项目根 config/ 目录
+# 配置文件位置：项目根/webserver/configuration/ 目录
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)  # 项目根：main_body/..
-DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "server_main.default.json")
-USER_CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "server_main.json")
+DEFAULT_CONFIG_PATH = os.path.join(PROJECT_ROOT, "web_server/configuration", "server_main.default.json")
+USER_CONFIG_PATH = os.path.join(PROJECT_ROOT, "web_server/configuration", "server_main.json")
 
 CONFIG = load_config(
     module="server_main",
