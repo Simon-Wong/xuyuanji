@@ -173,14 +173,14 @@ def test_ScriptSandbox_python():
     from sandboxex import ScriptSandbox
     sandbox = ScriptSandbox(timeout=60)
 
-    # 1. 基础用法：执行单个 Python 脚本
-    code, out, err = sandbox.run_python_script(
-        host_scripts_dir="/home/thbytwo/testCode/xuyuanji/sandboxex/ScriptSandbox/my_python",
-        entry_script="print_hello.py"
-    )
-    print("1返回码:", code)
-    print("1标准输出:\n", out)
-    print("1标准错误:\n", err)
+    # # 1. 基础用法：执行单个 Python 脚本
+    # code, out, err = sandbox.run_python_script(
+    #     host_scripts_dir="/home/thbytwo/testCode/xuyuanji/sandboxex/ScriptSandbox/my_python",
+    #     entry_script="print_hello.py"
+    # )
+    # print("1返回码:", code)
+    # print("1标准输出:\n", out)
+    # print("1标准错误:\n", err)
 
     # 2. 带脚本参数 + 额外挂载数据目录
     code, out, err = sandbox.run_python_script(
@@ -202,8 +202,8 @@ if __name__ == "__main__":
     #test_HttpStatefulSandbox()
     #test_InteractivePythonSandbox()
     #test_PersistentSandbox_1()
-    #test_PersistentSandbox_2()
+    test_PersistentSandbox_2()
     #test_PersistentSandbox_3()
-    test_ScriptSandbox_bash()
-    test_ScriptSandbox_python()
+    #test_ScriptSandbox_bash()
+    #test_ScriptSandbox_python()
     
