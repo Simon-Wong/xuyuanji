@@ -213,16 +213,20 @@ class Sandboxex:
     sandbox_script_type:str=""
     sandbox:PersistentScriptSandbox
 
-    def __init__(self,user_config:UserConfig,save_dir: str):
-        self.sandbox_type=user_config.sandbox_type
+    save_dir:str#调试用
+    host_scripts_dir:str#调试用
+    host_data_dir:str=""#调试用
+
+    def __init__(self,sandbox_type: str,sandbox_script_type: str,save_dir: str):
+        self.sandbox_type=sandbox_type
 
         if self.sandbox_type == "PersistentScriptSandbox":
             self.sandbox=PersistentScriptSandbox(output_dir=save_dir)
-            self.sandbox_script_type=user_config.sandbox_script_type
+            self.sandbox_script_type=sandbox_script_type
 
         else:
             self.sandbox=None
-            print(f"不支持的sandbox_type {user_config.sandbox_type}")
+            print(f"不支持的sandbox_type {sandbox_type}")
 
     def start(self,host_scripts_dir: str,host_data_dir: str = None,ro_volumes: list[tuple[str, str]] = None)->tuple[bool,str]:
         flag:bool =False
@@ -233,9 +237,13 @@ class Sandboxex:
             flag= self.sandbox.start_python_script(host_scripts_dir=host_scripts_dir,
                                                    host_data_dir=host_data_dir,
                                                    ro_volumes=ro_volumes)
+            self.host_scripts_dir=host_scripts_dir
+            self.host_data_dir=host_data_dir
+
         elif self.sandbox_script_type == "bash":
             flag = self.sandbox.start_bash_script(host_scripts_dir=host_scripts_dir,
                                                   ro_volumes=ro_volumes)
+            self.host_scripts_dir=host_scripts_dir
         
         if flag:
             return True,""
@@ -265,24 +273,60 @@ class Sandboxex:
         
         return errstr
 
-
 class CallExecutor:
     max_turns_try_function:int
+    use_sandbox:bool=False
     sandbox:Sandboxex
-    
+    need_init_flag:bool=False
+    sandbox_type:str
+    sandbox_script_type:str
+    save_dir:str
+    host_scripts_dir:str
+
     def __init__(self,user_config:UserConfig):
         self.max_turns_try_function=user_config.max_turns_try_function
         if user_config.use_sandbox == True:
-            self.sandbox=Sandboxex(user_config,save_dir=user_config.save_dir)
-            self.sandbox.start(host_scripts_dir=user_config.output_dir)
+            self.use_sandbox=True
+            self.need_init_flag=True
+
+            self.sandbox_type=user_config.sandbox_type
+            self.sandbox_script_type=user_config.sandbox_script_type
+            self.save_dir=user_config.save_dir
+
+            self.host_scripts_dir=user_config.output_dir
         else:
             self.sandbox=None
+
+    def append_prompt(self)->str:
+        '''
+        补充提示词
+        '''
+        pm=""
+        if self.use_sandbox:
+            pm=f'''
+启用了沙箱，允许运行{self.sandbox_script_type}类型的脚本。
+脚本存放目录: {self.host_scripts_dir}，
+数据目录: {self.save_dir}，
+沙箱结果保存目录: {self.save_dir}'''
+        else:
+            pm=f'''
+未启用沙箱，不允许运行脚本。
+''' 
+        return pm
 
     def stop(self):
         if self.sandbox is not None:
             self.sandbox.stop()
 
     def run_in_sandbox(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
+        if self.need_init_flag:
+            self.need_init_flag=False
+            self.sandbox=Sandboxex(sandbox_type=self.sandbox_type,
+                                   sandbox_script_type=self.sandbox_script_type,
+                                   save_dir=self.save_dir)
+            self.sandbox.start(host_scripts_dir=self.host_scripts_dir,
+                               host_data_dir=self.save_dir)
+
         if self.sandbox is None:
             data.append_callresult({"call_id": tc_id,
                             "output": "用户没有权限使用沙箱执行脚本。请不要再尝试调用该工具。",
@@ -408,6 +452,13 @@ class WorkSpace:
         print(f"保存目录: {self.save_dir}")
         print(f"是否启用沙箱: {self.use_sandbox}")
         print(f"沙箱是否可用: {self.enable_sandbox}")
+
+    def append_prompt(self)->str:
+        '''
+        补充提示词
+        '''
+        pm=self.call_executor.append_prompt()
+        return pm
 
 class Actor:
     agent: Agent
