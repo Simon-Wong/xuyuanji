@@ -15,7 +15,14 @@ class UserConfig:
     # 对于配置文件中未列出的字段会忽略
     max_turns_try_function:int=5 # 最大尝试次数，默认3次
     debug_need_same_answer:bool=False # 调试用，是否需要相同回答，默认False
-    blabla:str="blabla"
+    work_dir: str="default_work_dir"# 工作目录，默认default_work_dir
+    output_dir: str= "default_output_dir"# 输出目录，默认default_output_dir
+    save_dir: str="default_save_dir"# 保存目录，默认default_save_dir
+    use_sandbox: bool=True # 是否使用沙箱，默认True
+    sandbox_type:str="PersistentScriptSandbox"# 沙箱类型，默认PersistentScriptSandbox
+    sandbox_script_type:str="python"# 沙箱脚本类型，默认python
+
+    blabla:str="blabla"# 测试用字段，默认blabla
 
     # def __init__(self,user_id:str,session_id:str,config_file_name:str,**kwargs):
     #     self.user_id=user_id

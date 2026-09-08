@@ -17,6 +17,9 @@ import shlex       # 【修复1新增】用于shell参数转义
 import atexit      # 【修复3新增】程序退出兜底清理
 
 class PersistentScriptSandbox:
+    '''
+    持久化脚本沙箱
+    '''
     def __init__(
         self,
         image: str = "pyubuntu:3.11",

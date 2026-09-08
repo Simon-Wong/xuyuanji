@@ -10,6 +10,8 @@ import json
 
 from configuration import UserConfig
 
+from sandboxex import PersistentScriptSandbox
+
 from tools import load_tools_from_folder
 all_tools,tool_map = load_tools_from_folder()
 print("Loaded tools:", [t.name for t in all_tools])
@@ -206,40 +208,101 @@ class ActorData:
     def get_callresults(self)->MsgHis:
         return self.callresults
 
-class WorkSpace:
-    user_config:UserConfig
-    work_dir:str
-    output_dir:str
-    save_dir:str
+class Sandboxex:
+    sandbox_type:str=""
+    sandbox_script_type:str=""
+    sandbox:PersistentScriptSandbox
 
-    def __init__(self,user_config:UserConfig):
-        self.user_config=user_config
+    def __init__(self,user_config:UserConfig,save_dir: str):
+        self.sandbox_type=user_config.sandbox_type
 
-        self.work_dir=os.getcwd()
-        if self.user_config.work_dir != "default_work_dir":
-            if os.path.exists(self.user_config.work_dir):
-                self.work_dir=self.user_config.work_dir
+        if self.sandbox_type == "PersistentScriptSandbox":
+            self.sandbox=PersistentScriptSandbox(output_dir=save_dir)
+            self.sandbox_script_type=user_config.sandbox_script_type
 
-        if self.user_config.output_dir != "default_output_dir":
-            if os.path.exists(self.user_config.output_dir):
-                self.output_dir=self.user_config.output_dir
+        else:
+            self.sandbox=None
+            print(f"不支持的sandbox_type {user_config.sandbox_type}")
+
+    def start(self,host_scripts_dir: str,host_data_dir: str = None,ro_volumes: list[tuple[str, str]] = None)->tuple[bool,str]:
+        flag:bool =False
+        if self.sandbox is None:
+            return False,f"错误：不支持的sandbox_type： {self.sandbox_type}"
+
+        if self.sandbox_script_type == "python":
+            flag= self.sandbox.start_python_script(host_scripts_dir=host_scripts_dir,
+                                                   host_data_dir=host_data_dir,
+                                                   ro_volumes=ro_volumes)
+        elif self.sandbox_script_type == "bash":
+            flag = self.sandbox.start_bash_script(host_scripts_dir=host_scripts_dir,
+                                                  ro_volumes=ro_volumes)
         
-        if self.user_config.save_dir != "default_save_dir":
-            if os.path.exists(self.user_config.save_dir):
-                self.save_dir=self.user_config.save_dir
+        if flag:
+            return True,""
+        elif not flag:
+            return False,f"错误：启动{self.sandbox_script_type}类型的PersistentScriptSandbox沙箱失败"
 
-class Sandbox:
-    user_config:UserConfig
+        return False,f"错误：不支持的sandbox_script_type {self.sandbox_script_type},仅支持python和bash"
 
-    def __init__(self,user_config:UserConfig):
-        self.user_config=user_config
+    def stop(self):
+        if self.sandbox is None:
+            return f"错误：不支持的sandbox_type {self.sandbox_type}"
+        self.sandbox.cleanup()
 
+    def run(self, name:str, args:str) -> str:
+        if self.sandbox is None:
+            return f"错误：不支持的sandbox_type {self.sandbox_type}"
+        
+        if self.sandbox_script_type == "python":
+            flag, outputstr, errstr = self.sandbox.run_python_script(name, args)
+        elif self.sandbox_script_type == "bash":
+            flag, outputstr, errstr = self.sandbox.run_bash_script(name, args)
+        else:
+            return f"错误：不支持的sandbox_script_type {self.sandbox_script_type},仅支持python和bash"
+        
+        if flag == 0:
+            return outputstr
+        
+        return errstr
 
 
 class CallExecutor:
-    user_config:UserConfig
+    max_turns_try_function:int
+    sandbox:Sandboxex
+    
     def __init__(self,user_config:UserConfig):
-        self.user_config=user_config
+        self.max_turns_try_function=user_config.max_turns_try_function
+        if user_config.use_sandbox == True:
+            self.sandbox=Sandboxex(user_config,save_dir=user_config.save_dir)
+            self.sandbox.start(host_scripts_dir=user_config.output_dir)
+        else:
+            self.sandbox=None
+
+    def stop(self):
+        if self.sandbox is not None:
+            self.sandbox.stop()
+
+    def run_in_sandbox(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
+        if self.sandbox is None:
+            data.append_callresult({"call_id": tc_id,
+                            "output": "用户没有权限使用沙箱执行脚本。请不要再尝试调用该工具。",
+                            "type": "function_call_output"
+                        })
+            return data
+        try:
+            args=json.loads(tc_args)
+            result_data=self.sandbox.run(name=tc_name, args=args)
+            print(f"sandbox执行结果: {result_data}")
+        except Exception as e:
+            result_data = f"sandbox执行出错: {e}"
+            print(result_data)
+
+        data.append_callresult({"call_id": tc_id,
+                            "output": result_data,
+                            "type": "function_call_output"
+                        })   
+        
+        return data
 
     def run(self, data:ActorData) -> ActorData:
         checklist=data.get_checklist()  
@@ -253,9 +316,14 @@ class CallExecutor:
                 #self.state.approve(self.result.interruptions[idx])
                 print(f"<{idx}> {detail} 审批：通过")
                 #尝试运行多次
-                for idx_time in range(self.user_config.max_turns_try_function):
+                for idx_time in range(self.max_turns_try_function):#todo:考虑是否需要尝试多次
                     tool_func=tool_map.get(tc_name)
-                    if tool_func is not None:
+                    if tool_func=="execute_script":
+                        #执行脚本需要在沙箱中运行
+                        data=self.run_in_sandbox(tc_id,tc_name,tc_args,data)
+                        break#执行脚本后，跳出循环。无法保证脚本具有幂等性。
+
+                    elif tool_func is not None:
                         try:
                             args=json.loads(tc_args)
                             result_data=tool_func(**args)
@@ -284,6 +352,62 @@ class CallExecutor:
                             })
             
         return data
+
+class WorkSpace:
+    work_dir:str
+    output_dir:str
+    save_dir:str
+    call_executor:CallExecutor
+    use_sandbox:bool=False
+    enable_sandbox:bool=False
+
+    def __init__(self,user_config:UserConfig):
+        self.use_sandbox=user_config.use_sandbox
+        self.work_dir=os.getcwd()
+        if user_config.work_dir != "default_work_dir":
+            if os.path.exists(user_config.work_dir) and os.path.isdir(user_config.work_dir):
+                self.work_dir=user_config.work_dir
+            else:
+                print(f"错误：工作目录 {user_config.work_dir} 不存在或不是目录。使用当前目录 {self.work_dir}")
+                self.work_dir=os.getcwd()
+
+
+        program_dir=os.path.dirname(os.path.abspath(__file__))
+        self.output_dir=os.path.join(program_dir,"output_"+user_config.user_id+"_"+user_config.session_id)
+        if user_config.output_dir != "default_output_dir":
+            if os.path.exists(user_config.output_dir) and os.path.isdir(user_config.output_dir) and os.access(user_config.output_dir, os.W_OK):
+                self.output_dir=user_config.output_dir
+            else:
+                print(f"错误：输出目录 {user_config.output_dir} 不存在或不是目录或不可写。使用默认规则生成目录 {self.output_dir}")
+                os.makedirs(self.output_dir, exist_ok=True)
+        else:
+            os.makedirs(self.output_dir, exist_ok=True)
+
+        self.save_dir=os.path.join(program_dir,"save_"+user_config.user_id)      
+        if user_config.save_dir != "default_save_dir":
+            if os.path.exists(user_config.save_dir) and os.path.isdir(user_config.save_dir) and os.access(user_config.save_dir, os.W_OK):
+                self.save_dir=user_config.save_dir
+            else:
+                print(f"错误：保存目录 {user_config.save_dir} 不存在或不是目录或不可写。使用默认规则生成目录 {self.save_dir}")
+                os.makedirs(self.save_dir, exist_ok=True)
+        else:
+            os.makedirs(self.save_dir, exist_ok=True)
+
+        self.call_executor=CallExecutor(user_config)
+        if self.call_executor.sandbox:
+            self.enable_sandbox=True
+
+    def stop(self):
+        if self.call_executor.sandbox is not None:
+            self.call_executor.sandbox.stop()
+            self.enable_sandbox=False
+
+    def show(self):
+        print(f"工作目录: {self.work_dir}")
+        print(f"输出目录: {self.output_dir}")
+        print(f"保存目录: {self.save_dir}")
+        print(f"是否启用沙箱: {self.use_sandbox}")
+        print(f"沙箱是否可用: {self.enable_sandbox}")
 
 class Actor:
     agent: Agent
@@ -436,7 +560,7 @@ async def Test1():
     _,agent,_=global_agent_store.get_agent("天气助手2")
     msghis=global_message_manager.get_messages("test_user_1","session_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
-    call_exe=CallExecutor(user_cfg)
+    workspace=WorkSpace(user_cfg)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
     actor_data:ActorData=await actor.play(role="user",input="北京今天天气怎么样？上海今天天气怎么样？")
@@ -446,7 +570,7 @@ async def Test1():
             actor_data.check_done()
 
         if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=call_exe.run(actor_data)
+            actor_data=workspace.call_executor.run(actor_data)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
             actor_data=await actor.play(actor_data=actor_data)
@@ -470,7 +594,7 @@ async def Test2():
     _,agent,_=global_agent_store.get_agent("天气助手")
     msghis=global_message_manager.get_messages("test_user_1","session_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
-    call_exe=CallExecutor(user_cfg)
+    workspace=WorkSpace(user_cfg)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
     actor.set_debug_need_same_answer(True)
@@ -488,7 +612,7 @@ async def Test2():
                 actor_data.check_done()
 
             if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-                actor_data=call_exe.run(actor_data)
+                actor_data=workspace.call_executor.run(actor_data)
 
             if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
                 actor_data=await actor.play(actor_data=actor_data)
@@ -514,7 +638,7 @@ async def Test2():
                 actor_data.check_done()
 
             if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-                actor_data=call_exe.run(actor_data)
+                actor_data=workspace.call_executor.run(actor_data)
 
             if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
                 actor_data=await actor.play(actor_data=actor_data)

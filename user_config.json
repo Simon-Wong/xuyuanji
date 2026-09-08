@@ -3,5 +3,8 @@
     "max_turns_try_function": 3,
     "work_dir": "default_work_dir",
     "output_dir": "default_output_dir",
-    "save_dir":"default_save_dir"
+    "save_dir":"default_save_dir",
+    "use_sandbox":true,
+    "sandbox_type":"PersistentScriptSandbox",
+    "sandbox_script_type":"python"
 }

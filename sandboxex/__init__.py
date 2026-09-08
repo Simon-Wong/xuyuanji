@@ -4,7 +4,7 @@ from .ScriptSandbox import ScriptSandbox
 from .PersistentSandbox import PersistentSandbox
 from .HttpStatefulSandbox import HttpStatefulSandbox
 from .InteractivePythonSandbox import InteractivePythonSandbox
-
+from .PersistentScriptSandbox import PersistentScriptSandbox
 
 __all__ = [
     "run_command",
@@ -12,5 +12,6 @@ __all__ = [
     "ScriptSandbox",
     "PersistentSandbox",
     "HttpStatefulSandbox",
-    "InteractivePythonSandbox"
+    "InteractivePythonSandbox",
+    "PersistentScriptSandbox",
 ]
