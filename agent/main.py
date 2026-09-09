@@ -676,7 +676,7 @@ async def Test2():
     workspace=WorkSpace(user_cfg)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
-    actor.set_debug_need_same_answer(True)
+    actor.set_debug_need_same_answer(False)
 
     print(f"{'='*50}第1组问题{'='*50}")
 
@@ -725,7 +725,7 @@ async def Test2():
         print(f"\n助手: {actor_data.result}")
 
 async def Test3():
-    cachemgr=CacheManager(is_debug=True)
+    cachemgr=CacheManager()
     cachemgr.set("q1","a1")
     cachemgr.set("q2","a2")
     cachemgr.set("q3","a3")
@@ -733,7 +733,7 @@ async def Test3():
     print(cache)
 
 async def Test4():
-    cachemgr=CacheManager(is_debug=True)
+    cachemgr=CacheManager()
     cachemgr.set("q1","a1")
     cachemgr.set("q3","a3")
     cache=cachemgr.get("q2")
@@ -789,11 +789,11 @@ async def Test6():
 async def main():
     initialize()
     # await Test1()
-    #await Test2()
+    # await Test2()
 
-    #await Test3()
-    #await Test4()
-    # await Test5()
+    # await Test3()
+    # await Test4()
+    await Test5()
     await Test6()
 
 if __name__ == "__main__":
