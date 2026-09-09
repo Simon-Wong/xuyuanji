@@ -85,7 +85,7 @@ def delete_dir(dir:str)->None:
     :param dir: 目录路径
     :return: None
     '''
-    if os.path.exists(dir) and dir is not "/":
+    if os.path.exists(dir) and dir != "/":
         os.rmdir(dir)
 
 @function_tool(needs_approval=True)
@@ -95,7 +95,7 @@ def delete_file(file:str)->None:
     :param file: 文件路径
     :return: None
     '''
-    if os.path.exists(file) and file is not "/":
+    if os.path.exists(file) and file != "/":
         os.remove(file)
 
 @function_tool(needs_approval=True)
@@ -108,3 +108,17 @@ def execute_script(script_name:str,script_args:str|None=None)->str:
     '''
     #具体执行由其他模块实现
     pass
+
+if __name__ == "__main__":
+
+    query="演员 巩俐 作品"
+    print(query)
+    with DDGS() as ddgs:
+        results = list(ddgs.text(query, max_results=5))
+    if not results:
+        print("未找到相关结果。")
+    
+    output = []
+    for i, r in enumerate(results, 1):
+        output.append(f"{i}. {r['title']}\n   链接：{r['href']}\n   摘要：{r['body']}")
+    print("\n\n".join(output))

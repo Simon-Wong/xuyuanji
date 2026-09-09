@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+ROOT_DIR=Path(__file__).parent.parent
+print(ROOT_DIR)
+sys.path.append(str(ROOT_DIR))
+
 import asyncio
 import os
 from agents import Agent, Runner, RunConfig, function_tool, set_tracing_disabled,RunResult,TResponseInputItem
@@ -8,7 +14,7 @@ from typing import Annotated, Literal,Any
 from pydantic import Field,BaseModel
 import json
 
-from configuration import UserConfig
+from agent.configuration import UserConfig
 
 from sandboxex import PersistentScriptSandbox
 
@@ -164,6 +170,17 @@ def initialize():
     )
     global_agent_store.register_agent(agent2)
 
+    agent3 = Agent(
+        name="八卦小助手",
+        instructions=(
+            "你是一个八卦助手，名字叫小8。\n"
+            "当用户询问任何八卦问题时，你可以调用适当工具来获取数据。\n"
+            "如果用户问与八卦无关的问题，直接回答：'我是八卦助手，只回答八卦问题。"
+            "不能伪造任何结果，不知道或者无法调用工具请直接回复原因。"),
+        tools=all_tools,
+    )
+    global_agent_store.register_agent(agent3) 
+
 
 Role=Annotated[Literal["user", "assistant", "system"],Field(description="消息角色，仅支持 user/assistant/system")]
 InputStr=Annotated[str,Field(description="输入的消息内容")]
@@ -294,8 +311,6 @@ class CallExecutor:
             self.save_dir=user_config.save_dir
 
             self.host_scripts_dir=user_config.output_dir
-        else:
-            self.sandbox=None
 
     def append_prompt(self)->str:
         '''
@@ -438,20 +453,17 @@ class WorkSpace:
             os.makedirs(self.save_dir, exist_ok=True)
 
         self.call_executor=CallExecutor(user_config)
-        if self.call_executor.sandbox:
-            self.enable_sandbox=True
 
     def stop(self):
         if self.call_executor.sandbox is not None:
             self.call_executor.sandbox.stop()
-            self.enable_sandbox=False
 
     def show(self):
         print(f"工作目录: {self.work_dir}")
         print(f"输出目录: {self.output_dir}")
         print(f"保存目录: {self.save_dir}")
-        print(f"是否启用沙箱: {self.use_sandbox}")
-        print(f"沙箱是否可用: {self.enable_sandbox}")
+        print(f"是否启用沙箱: {self.call_executor.use_sandbox}")
+        print(f"沙箱是否可用: {self.call_executor.sandbox is not None}")
 
     def append_prompt(self)->str:
         '''
@@ -711,14 +723,37 @@ async def Test4():
     cache=cachemgr.get("q2")
     print(cache)
 
+async def Test5():
+    provider = global_model_store.get_model(env_model, env_base_url)
+    run_config = RunConfig(model_provider=provider)
+    _,agent,_=global_agent_store.get_agent("八卦小助手")
+    msghis=global_message_manager.get_messages("test_user_1","session_1")
+    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
+    workspace=WorkSpace(user_cfg)
+
+    actor=Actor(agent,run_config,msghis,user_cfg)
+    actor_data:ActorData=await actor.play(role="user",input="娱乐圈最近有什么大新闻？")
+    while actor_data.status!=ActorStatus.FINAL_RESULT:
+        if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
+            #假装外部已经审批
+            actor_data.check_done()
+
+        if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
+            actor_data=workspace.call_executor.run(actor_data)
+
+        if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
+            actor_data=await actor.play(actor_data=actor_data)
+
+    print(f"\n助手: {actor_data.result}")
 
 async def main():
     initialize()
     #await Test1()
-    await Test2()
+    #await Test2()
 
     #await Test3()
     #await Test4()
+    await Test5()
 
 if __name__ == "__main__":
     asyncio.run(main())
