@@ -1,3 +1,4 @@
 .vscode/
 cache.json
 outputdir/some_w.txt
+agent/output_*

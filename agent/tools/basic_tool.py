@@ -45,7 +45,7 @@ def search_file(dir:str,keyword:str)->list[str]:
     if result.returncode == 0:
         return result.stdout.splitlines()
     else:
-        return []
+        return "未找到符合条件的文件。"
 
 @function_tool(needs_approval=True)
 def read_file(filename:str)->str:
@@ -67,6 +67,7 @@ def write_file(filename:str,content:str)->None:
     '''
     with open(filename, 'w', encoding='utf-8') as file:
         file.write(content) 
+    return "文件写入成功。"
 
 @function_tool(needs_approval=True)
 def create_dir(dir:str)->None:
@@ -77,6 +78,9 @@ def create_dir(dir:str)->None:
     '''
     if not os.path.exists(dir):
         os.makedirs(dir)
+        return "目录创建成功。"
+    else:
+        return "目录已存在。"
 
 @function_tool(needs_approval=True)
 def delete_dir(dir:str)->None:
@@ -87,6 +91,9 @@ def delete_dir(dir:str)->None:
     '''
     if os.path.exists(dir) and dir != "/":
         os.rmdir(dir)
+        return "目录删除成功。"
+    else:
+        return "目录不存在。"
 
 @function_tool(needs_approval=True)
 def delete_file(file:str)->None:
@@ -97,6 +104,9 @@ def delete_file(file:str)->None:
     '''
     if os.path.exists(file) and file != "/":
         os.remove(file)
+        return "文件删除成功。"
+    else:
+        return "文件不存在。"
 
 @function_tool(needs_approval=True)
 def execute_script(script_name:str,script_args:str|None=None)->str:

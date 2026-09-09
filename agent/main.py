@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT_DIR=Path(__file__).parent.parent
 print(ROOT_DIR)
 sys.path.append(str(ROOT_DIR))
-
+import copy
 import asyncio
 import os
 from agents import Agent, Runner, RunConfig, function_tool, set_tracing_disabled,RunResult,TResponseInputItem
@@ -181,6 +181,16 @@ def initialize():
     )
     global_agent_store.register_agent(agent3) 
 
+    agent3 = Agent(
+        name="脚本小助手",
+        instructions=(
+            "你是一个脚本编程助手，名字叫小虫。\n"
+            "当用户询问任何脚本编程问题时，你可以调用适当工具来获取数据、编写脚本、执行脚本。\n"
+            "如果用户问与脚本编程无关的问题，直接回答：'我是脚本编程助手，只回答脚本编程问题。"
+            "不能伪造任何结果，不知道或者无法调用工具请直接回复原因。"),
+        tools=all_tools,
+    )
+    global_agent_store.register_agent(agent3) 
 
 Role=Annotated[Literal["user", "assistant", "system"],Field(description="消息角色，仅支持 user/assistant/system")]
 InputStr=Annotated[str,Field(description="输入的消息内容")]
@@ -350,7 +360,9 @@ class CallExecutor:
             return data
         try:
             args=json.loads(tc_args)
-            result_data=self.sandbox.run(name=tc_name, args=args)
+            script_name=args["script_name"]
+            script_args=args["script_args"]
+            result_data=self.sandbox.run(name=script_name, args=script_args)
             print(f"sandbox执行结果: {result_data}")
         except Exception as e:
             result_data = f"sandbox执行出错: {e}"
@@ -377,9 +389,9 @@ class CallExecutor:
                 #尝试运行多次
                 for idx_time in range(self.max_turns_try_function):#todo:考虑是否需要尝试多次
                     tool_func=tool_map.get(tc_name)
-                    if tool_func=="execute_script":
+                    if tc_name=="execute_script":
                         #执行脚本需要在沙箱中运行
-                        data=self.run_in_sandbox(tc_id,tc_name,tc_args,data)
+                        data=self.run_in_sandbox(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
                         break#执行脚本后，跳出循环。无法保证脚本具有幂等性。
 
                     elif tool_func is not None:
@@ -452,7 +464,11 @@ class WorkSpace:
         else:
             os.makedirs(self.save_dir, exist_ok=True)
 
-        self.call_executor=CallExecutor(user_config)
+        user_config_real:UserConfig=copy.deepcopy(user_config)
+        user_config_real.work_dir=self.work_dir
+        user_config_real.output_dir=self.output_dir
+        user_config_real.save_dir=self.save_dir
+        self.call_executor=CallExecutor(user_config_real)
 
     def stop(self):
         if self.call_executor.sandbox is not None:
@@ -746,14 +762,39 @@ async def Test5():
 
     print(f"\n助手: {actor_data.result}")
 
+async def Test6():
+    provider = global_model_store.get_model(env_model, env_base_url)
+    run_config = RunConfig(model_provider=provider)
+    _,agent,_=global_agent_store.get_agent("脚本小助手")
+    msghis=global_message_manager.get_messages("test_user_1","session_1")
+    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
+    workspace=WorkSpace(user_cfg)
+
+    actor=Actor(agent,run_config,msghis,user_cfg)
+    tmpinput="编写一个脚本，获取本机MAC地址并打印出来。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
+    actor_data:ActorData=await actor.play(role="user",input=tmpinput)
+    while actor_data.status!=ActorStatus.FINAL_RESULT:
+        if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
+            #假装外部已经审批
+            actor_data.check_done()
+
+        if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
+            actor_data=workspace.call_executor.run(actor_data)
+
+        if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
+            actor_data=await actor.play(actor_data=actor_data)
+
+    print(f"\n助手: {actor_data.result}")
+
 async def main():
     initialize()
-    #await Test1()
+    # await Test1()
     #await Test2()
 
     #await Test3()
     #await Test4()
-    await Test5()
+    # await Test5()
+    await Test6()
 
 if __name__ == "__main__":
     asyncio.run(main())
