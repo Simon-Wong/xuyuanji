@@ -1074,12 +1074,38 @@ async def Test5():
         global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
 async def Test6():
+    user_id="test_user_1"
+    session_id="session_1"
+    global_user_session_conversation_manager.record_user_session(user_id,session_id)#模拟用户登录后注册会话
+    cids=global_user_session_conversation_manager.get_conversations_id(user_id)#获取用户的对话列表
+    cid=""
+    caption=""
+    if cids==[]:
+        print("用户没有任何对话")
+        cid="conversation_1"
+        caption="对话1"
+        print(f"用户创建对话{cid} {caption}")
+    else:
+        print(f"用户已有{len(cids)}个对话")
+        cid=cids[0]
+        print(f"用户选择对话{cid}")
+        flag,caption=global_user_session_conversation_manager.get_conversation_caption(user_id,cid)
+        if flag==False:
+            print(reason_str)
+            return
+        else:
+            print(f"标题为：{caption}")
+
+    flag,reason_str=global_user_session_conversation_manager.record_user_session_conversation(user_id,session_id,cid,caption)#模拟用户打开对话
+    if flag==False:
+        print(reason_str)
+
     provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("脚本小助手")
-    msghis=global_message_manager.get_messages("test_user_1","conversation_1")
-    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
-    workspace=WorkSpace(user_cfg)
+    msghis=global_message_manager.get_messages(user_id,cid)
+    user_cfg=UserConfig.load(user_id=user_id,session_id=session_id,config_file_name="user_config.json")
+    workspace=global_workspace_manager.get_workspace(user_cfg,cid)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
     tmpinput="编写一个脚本，获取本机MAC地址并打印出来。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
@@ -1097,6 +1123,9 @@ async def Test6():
 
     print(f"\n助手: {actor_data.result}")
 
+    closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
+    for ccid in closed_cids:
+        global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
 async def main():
     initialize()
@@ -1105,8 +1134,8 @@ async def main():
 
     # await Test3()
     # await Test4()
-    await Test5()
-    #await Test6()
+    # await Test5()
+    await Test6()
 
 if __name__ == "__main__":
     asyncio.run(main())
