@@ -1,3 +1,8 @@
+'''
+用户-----会话-----------对话--------------------------工作空间
+         通信通道       不同的会话可同时打开同一个      同一会话共用同一个工作空间
+'''
+
 import sys
 from pathlib import Path
 ROOT_DIR=Path(__file__).parent.parent
@@ -81,17 +86,17 @@ class MessageManager:
     def __init__(self):
         self.all_messages = {}
 
-    def _make_key(self,user_id: str,session_id:str)->str:
-        return f"{user_id}@{session_id}"
-    def get_messages(self, user_id: str,session_id:str)->MsgHis:
-        if user_id is None or session_id is None:
+    def _make_key(self,user_id: str,conversation_id:str)->str:
+        return f"{user_id}@{conversation_id}"
+    def get_messages(self, user_id: str,conversation_id:str)->MsgHis:
+        if user_id is None or conversation_id is None:
             return []
 
-        key=self._make_key(user_id,session_id)
+        key=self._make_key(user_id,conversation_id)
         item=self.all_messages.get(key,[])
         return item
-    def append_message(self, user_id: str,session_id:str,msg:MsgHis):
-        key=self._make_key(user_id,session_id)
+    def append_message(self, user_id: str,conversation_id:str,msg:MsgHis):
+        key=self._make_key(user_id,conversation_id)
         self.all_messages[key].append(msg)
 
 global_message_manager = MessageManager()
@@ -314,6 +319,7 @@ class CallExecutor:
         self.max_turns_try_function=user_config.max_turns_try_function
         if user_config.use_sandbox == True:
             self.use_sandbox=True
+            self.sandbox=None
             self.need_init_flag=True
 
             self.sandbox_type=user_config.sandbox_type
@@ -424,6 +430,19 @@ class CallExecutor:
             
         return data
 
+class Product:
+
+    data:dict[str, list[tuple[str, str]]]=[]
+
+    question:str
+    type:str
+    product:str
+    def __init__(self,question:str,type:str,product:str):
+        self.question=question
+        self.type=type
+        self.product=product
+
+
 class WorkSpace:
     work_dir:str
     output_dir:str
@@ -431,8 +450,11 @@ class WorkSpace:
     call_executor:CallExecutor
     use_sandbox:bool=False
     enable_sandbox:bool=False
+    session_id:str
+    product:dict[str, list[tuple[str, str]]]=[]
 
     def __init__(self,user_config:UserConfig):
+        self.session_id=user_config.session_id
         self.use_sandbox=user_config.use_sandbox
         self.work_dir=os.getcwd()
         if user_config.work_dir != "default_work_dir":
@@ -470,9 +492,23 @@ class WorkSpace:
         user_config_real.save_dir=self.save_dir
         self.call_executor=CallExecutor(user_config_real)
 
+    def run(self, data:ActorData) -> ActorData:
+        return self.call_executor.run(data)
+
+    def make_product(self,question:str,type:str,product:str)->str:
+        # 生成产物
+        if question not in self.product:
+            self.product[question]=[]
+        self.product[question].append((type,product))
+
+    def save_product(self,data:ActorData,product:str)->None:
+        # 保存产物
+        pass
+    
+
     def stop(self):
-        if self.call_executor.sandbox is not None:
-            self.call_executor.sandbox.stop()
+        self.call_executor.stop()
+
 
     def show(self):
         print(f"工作目录: {self.work_dir}")
@@ -487,6 +523,187 @@ class WorkSpace:
         '''
         pm=self.call_executor.append_prompt()
         return pm
+
+class WorkspaceManager:
+    workspaces:dict[str, dict[str, WorkSpace]]={}
+    flag:bool=True
+    def get_workspace(self,user_config: UserConfig,conversation_id:str)->WorkSpace:
+        if self.flag==False:
+            return None
+
+        user_id=user_config.user_id
+        
+        if user_id not in self.workspaces:
+            self.workspaces[user_id]={}
+        if conversation_id not in self.workspaces[user_id]:
+            self.workspaces[user_id][conversation_id]=WorkSpace(user_config)
+
+        return self.workspaces[user_id][conversation_id]
+    
+    def stop_one(self,user_id:str,conversation_id:str):
+        if user_id not in self.workspaces.keys():
+            return
+        if conversation_id not in self.workspaces[user_id].keys():
+            return
+        self.workspaces[user_id][conversation_id].stop()
+        self.workspaces[user_id].pop(conversation_id)
+
+    def stop_all(self):
+        self.flag=False
+
+        for user_id in self.workspaces.keys():
+            for conversation_id in self.workspaces[user_id].keys():
+                self.workspaces[user_id][conversation_id].stop()
+
+        self.workspaces={}
+
+
+global_workspace_manager = WorkspaceManager()
+
+class Conversation:
+    id:str
+    ref_count:int=0
+    flag:bool=True
+    caption:str=""
+
+    def __init__(self,conversation_id:str,caption:str|None=None):
+        self.id=conversation_id
+        self.ref_count=0
+        self.flag=True
+        if caption is not None:
+            self.caption=caption
+        else:
+            self.caption="无标题"
+
+    def reference(self)->None:
+        self.ref_count+=1
+        self.flag=True
+
+    def release(self)->None:
+        self.ref_count-=1
+        if self.ref_count<=0:
+            self.flag=False
+
+    def is_opened(self)->bool:
+        return self.flag 
+
+class UserSessionConversationManager:
+    '''
+    记录用户会话打开了哪些对话
+    当用户关闭会话时，需要对该对话的计数减一，便于其他组件释放资源
+    '''
+    conversations:dict[str, Conversation]={}#对话id到对话
+    uid2cids:dict[str,list[str]]={}#用户id到多个对话id
+    uid2sid2cids:dict[str,dict[str,list[str]]]={}#用户id到会话id到多个对话id
+
+    def __init__(self):
+        self.conversations={}
+        self.uid2cids={}
+        self.uid2sid2cids={}
+
+    def record_user_session(self,user_id:str,session_id:str):
+        '''
+        记录用户会话，初始化对应的对话列表容器
+        若该用户会话已存在，则保留原有对话列表，不做覆盖
+        '''
+        user_session_map = self.uid2sid2cids.setdefault(user_id, {})
+        user_session_map.setdefault(session_id, [])
+
+    def record_user_session_conversation(self,user_id:str,session_id:str,conversation_id:str,conversation_caption:str|None=None)->tuple[bool,str]:
+        '''
+        记录用户在会话里打开了对话
+        '''
+        #self.record_user_session(user_id, session_id)#这个由外部保证
+
+        cids=self.uid2sid2cids[user_id][session_id]
+        if conversation_id in cids:#会话内的对话不能重复打开
+            return False,"对话已打开"
+        
+        tc=self.conversations.get(conversation_id)
+        if tc is None:
+            tc=Conversation(conversation_id,conversation_caption)
+            self.conversations[conversation_id]=tc
+            self.uid2cids.setdefault(user_id,[]).append(conversation_id)
+
+        tc.reference()
+
+        self.uid2sid2cids[user_id][session_id].append(conversation_id)
+        return True,""
+
+    def get_conversations_id(self,userid:str)->list[str]:
+        '''
+        获取用户拥有的对话id
+        '''
+        return self.uid2cids.get(userid,[])
+    
+    def get_conversation_caption(self,user_id:str,conversation_id:str)->tuple[bool,str]:
+        '''
+        获取对话标题
+        '''
+
+        cids=self.uid2cids.get(user_id,[])
+        if conversation_id not in cids:
+            return False,"用户不存在此对话"
+
+        conversation=self.conversations.get(conversation_id)
+        if conversation is None:
+            return False,"对话不存在"
+        
+        return True,conversation.caption
+
+    def remove_conversation(self,user_id:str,session_id:str,conversation_id:str)->str:
+        '''
+        移除对话
+        '''
+        if conversation_id in self.conversations:
+            self.conversations.pop(conversation_id)
+
+        cids=self.uid2cids[user_id]
+        if conversation_id in cids:
+            cids.remove(conversation_id)
+
+        cids2=self.uid2sid2cids[user_id][session_id]
+        if conversation_id in cids2:
+            cids2.remove(conversation_id)
+
+        return conversation_id
+    
+    def close_session(self,user_id:str,session_id:str)->list[str]:
+        '''
+        关闭会话，返回因关闭会话而关闭的所有对话id
+        '''
+        tmp=[]
+
+        cids=self.uid2sid2cids[user_id].pop(session_id)
+        for cid_id in cids:
+            c=self.conversations[cid_id]
+            c.release()
+            if c.is_opened()==False:
+                tmp.append(cid_id)
+
+        return tmp
+
+    def close_conversation(self,user_id:str,session_id:str,conversation_id:str)->tuple[bool,str]:
+        '''
+        关闭对话
+        如果对话正在使用，返回False,"对话正在使用"
+        如果对话未被使用，返回True,"对话id"
+        如果对话不存在，返回False,"对话不存在"
+        '''
+        cids=self.uid2sid2cids[user_id][session_id]
+        if conversation_id not in cids:
+            return False,"对话不存在"
+        
+        cids.remove(conversation_id)
+
+        c=self.conversations[conversation_id]
+        c.release()
+        if c.is_opened()==False:
+            return True,conversation_id
+        else:
+            return False,"对话正在使用"
+
+global_user_session_conversation_manager=UserSessionConversationManager()
 
 class Actor:
     agent: Agent
@@ -632,14 +849,39 @@ class Actor:
                     elif role is None and input is None and checklist is not None:# 查看审批结果但不执行函数
                     elif role is None and input is not None and checklist is None:# 获取函数执行结果后继续运行
                                                         ''', [])
-    
+
 async def Test1():
-    provider = global_model_store.get_model(env_model, env_base_url)
-    run_config = RunConfig(model_provider=provider)
-    _,agent,_=global_agent_store.get_agent("天气助手2")
-    msghis=global_message_manager.get_messages("test_user_1","session_1")
-    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
-    workspace=WorkSpace(user_cfg)
+    global_user_session_conversation_manager.record_user_session("test_user_1","session_1")#模拟用户登录后注册会话
+    cids=global_user_session_conversation_manager.get_conversations_id("test_user_1")#获取用户的对话列表
+    cid=""
+    caption=""
+    if cids==[]:
+        print("用户没有任何对话")
+        cid="conversation_1"
+        caption="对话1"
+        print(f"用户创建对话{cid} {caption}")
+    else:
+        print(f"用户已有{len(cids)}个对话")
+        cid=cids[0]
+        print(f"用户选择对话{cid}")
+        flag,caption=global_user_session_conversation_manager.get_conversation_caption("test_user_1",cid)
+        if flag==False:
+            print(reason_str)
+            return
+        else:
+            print(f"标题为：{caption}")
+
+    flag,reason_str=global_user_session_conversation_manager.record_user_session_conversation("test_user_1","session_1",cid,caption)#模拟用户打开对话
+    if flag==False:
+        print(reason_str)
+
+    provider = global_model_store.get_model(env_model, env_base_url)#加载模型
+    run_config = RunConfig(model_provider=provider)#加载模型
+    _,agent,_=global_agent_store.get_agent("天气助手2")#加载模型
+
+    msghis=global_message_manager.get_messages("test_user_1",cid)#获取对话历史记录
+    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")#加载用户配置
+    workspace=global_workspace_manager.get_workspace(user_cfg,cid)#获取工作空间
 
     actor=Actor(agent,run_config,msghis,user_cfg)
     actor_data:ActorData=await actor.play(role="user",input="北京今天天气怎么样？上海今天天气怎么样？")
@@ -649,12 +891,17 @@ async def Test1():
             actor_data.check_done()
 
         if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=workspace.call_executor.run(actor_data)
+            actor_data=workspace.run(actor_data)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
             actor_data=await actor.play(actor_data=actor_data)
 
     print(f"\n助手: {actor_data.result}")
+
+    closed_cids=global_user_session_conversation_manager.close_session("test_user_1","session_1")#关闭会话，返回因关闭会话而关闭的所有对话id
+    for ccid in closed_cids:
+        global_workspace_manager.stop_one("test_user_1",ccid)#关闭工作空间
+
 
 async def Test2():
     questions1 = [
@@ -671,7 +918,7 @@ async def Test2():
     provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("天气助手")
-    msghis=global_message_manager.get_messages("test_user_1","session_1")
+    msghis=global_message_manager.get_messages("test_user_1","conversation_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
     workspace=WorkSpace(user_cfg)
 
@@ -691,7 +938,7 @@ async def Test2():
                 actor_data.check_done()
 
             if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-                actor_data=workspace.call_executor.run(actor_data)
+                actor_data=workspace.run(actor_data)
 
             if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
                 actor_data=await actor.play(actor_data=actor_data)
@@ -717,7 +964,7 @@ async def Test2():
                 actor_data.check_done()
 
             if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-                actor_data=workspace.call_executor.run(actor_data)
+                actor_data=workspace.run(actor_data)
 
             if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
                 actor_data=await actor.play(actor_data=actor_data)
@@ -743,7 +990,7 @@ async def Test5():
     provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("八卦小助手")
-    msghis=global_message_manager.get_messages("test_user_1","session_1")
+    msghis=global_message_manager.get_messages("test_user_1","conversation_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
     workspace=WorkSpace(user_cfg)
 
@@ -755,7 +1002,7 @@ async def Test5():
             actor_data.check_done()
 
         if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=workspace.call_executor.run(actor_data)
+            actor_data=workspace.run(actor_data)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
             actor_data=await actor.play(actor_data=actor_data)
@@ -766,7 +1013,7 @@ async def Test6():
     provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("脚本小助手")
-    msghis=global_message_manager.get_messages("test_user_1","session_1")
+    msghis=global_message_manager.get_messages("test_user_1","conversation_1")
     user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")
     workspace=WorkSpace(user_cfg)
 
@@ -779,22 +1026,23 @@ async def Test6():
             actor_data.check_done()
 
         if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=workspace.call_executor.run(actor_data)
+            actor_data=workspace.run(actor_data)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
             actor_data=await actor.play(actor_data=actor_data)
 
     print(f"\n助手: {actor_data.result}")
 
+
 async def main():
     initialize()
-    # await Test1()
-    # await Test2()
+    await Test1()
+    #await Test2()
 
-    # await Test3()
-    # await Test4()
-    await Test5()
-    await Test6()
+    #await Test3()
+    #await Test4()
+    #await Test5()
+    #await Test6()
 
 if __name__ == "__main__":
     asyncio.run(main())
