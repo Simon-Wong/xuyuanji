@@ -851,8 +851,10 @@ class Actor:
                                                         ''', [])
 
 async def Test1():
-    global_user_session_conversation_manager.record_user_session("test_user_1","session_1")#模拟用户登录后注册会话
-    cids=global_user_session_conversation_manager.get_conversations_id("test_user_1")#获取用户的对话列表
+    user_id="test_user_1"
+    session_id="session_1"
+    global_user_session_conversation_manager.record_user_session(user_id,session_id)#模拟用户登录后注册会话
+    cids=global_user_session_conversation_manager.get_conversations_id(user_id)#获取用户的对话列表
     cid=""
     caption=""
     if cids==[]:
@@ -864,14 +866,14 @@ async def Test1():
         print(f"用户已有{len(cids)}个对话")
         cid=cids[0]
         print(f"用户选择对话{cid}")
-        flag,caption=global_user_session_conversation_manager.get_conversation_caption("test_user_1",cid)
+        flag,caption=global_user_session_conversation_manager.get_conversation_caption(user_id,cid)
         if flag==False:
             print(reason_str)
             return
         else:
             print(f"标题为：{caption}")
 
-    flag,reason_str=global_user_session_conversation_manager.record_user_session_conversation("test_user_1","session_1",cid,caption)#模拟用户打开对话
+    flag,reason_str=global_user_session_conversation_manager.record_user_session_conversation(user_id,session_id,cid,caption)#模拟用户打开对话
     if flag==False:
         print(reason_str)
 
@@ -879,8 +881,8 @@ async def Test1():
     run_config = RunConfig(model_provider=provider)#加载模型
     _,agent,_=global_agent_store.get_agent("天气助手2")#加载模型
 
-    msghis=global_message_manager.get_messages("test_user_1",cid)#获取对话历史记录
-    user_cfg=UserConfig.load(user_id="test_user_1",session_id="session_1",config_file_name="user_config.json")#加载用户配置
+    msghis=global_message_manager.get_messages(user_id,cid)#获取对话历史记录
+    user_cfg=UserConfig.load(user_id=user_id,session_id=session_id,config_file_name="user_config.json")#加载用户配置
     workspace=global_workspace_manager.get_workspace(user_cfg,cid)#获取工作空间
 
     actor=Actor(agent,run_config,msghis,user_cfg)
@@ -898,9 +900,9 @@ async def Test1():
 
     print(f"\n助手: {actor_data.result}")
 
-    closed_cids=global_user_session_conversation_manager.close_session("test_user_1","session_1")#关闭会话，返回因关闭会话而关闭的所有对话id
+    closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
     for ccid in closed_cids:
-        global_workspace_manager.stop_one("test_user_1",ccid)#关闭工作空间
+        global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
 
 async def Test2():
