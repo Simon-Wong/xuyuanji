@@ -229,7 +229,7 @@ class ActorData:
     callresults:MsgHis#存储工具调用结果
 
     def __init__(self,actor_id:str,status:ActorStatus,result:str,checklist:CheckList=[]):
-        self.id=actor_id
+        self.actor_id=actor_id
         self.status=status
         self.result=result
         self.checklist=checklist
@@ -238,6 +238,9 @@ class ActorData:
 
     def get_id(self)->str:
         return self.id
+    
+    def get_actor_id(self)->str:
+        return self.actor_id
     
     def get_checklist(self)->CheckList:
         return self.checklist
@@ -1144,7 +1147,7 @@ async def Test6():
         print(reason_str)
 
     model_name="moophlo/Qwen3-Coder-30B-A3B-Instruct-GGUF:latest"
-    provider = global_model_store.get_model(model_name, env_base_url)
+    provider = global_model_store.get_model(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("脚本小助手")
     msghis=global_message_manager.get_messages(user_id,cid)
@@ -1153,7 +1156,7 @@ async def Test6():
 
     actor=Actor(agent,run_config,msghis,user_cfg)
     tmpinput="编写一个脚本，获取本机MAC地址。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
-    actor_data:ActorData=await actor.play(role="user",input=tmpinput)
+    actor_data:ActorData=await actor.play(role="user",input=tmpinput)#开始运行，始终以actor_id为贯穿线索
     while actor_data.status!=ActorStatus.FINAL_RESULT:
         if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
             #假装外部已经审批
@@ -1163,7 +1166,8 @@ async def Test6():
             actor_data=workspace.run(actor_data)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
-            actor_data=await actor.play(actor_data=actor_data)
+            if actor_data.get_actor_id()==actor.get_id():#确保是当前actor的运行结果，以继续运行。
+                actor_data=await actor.play(actor_data=actor_data)
 
     print(f"\n助手: {actor_data.result}")
 
