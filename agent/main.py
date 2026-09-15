@@ -15,7 +15,7 @@ from agents import Agent, Runner, RunConfig, function_tool, set_tracing_disabled
 from agents import RunItem
 from openai_agents_providers import OllamaProvider
 
-from typing import Annotated, Literal,Any
+from typing import Annotated, Literal,Any,Tuple
 from pydantic import Field,BaseModel
 import json
 
@@ -26,7 +26,10 @@ from sandboxex import PersistentScriptSandbox
 from tools import load_tools_from_folder
 all_tools,tool_map = load_tools_from_folder()
 print("Loaded tools:", [t.name for t in all_tools])
-
+tool_names=tool_map.keys()
+product_tools=[]
+if "read_file" in tool_names and "write_file" in tool_names and "read_file_lines" in tool_names and "edit_file_lines" in tool_names:
+    product_tools=["read_file","write_file","read_file_lines","edit_file_lines"]
 
 set_tracing_disabled(True)
 
@@ -305,6 +308,9 @@ class Sandboxex:
         
         return errstr
 
+    def save_file(self,container_path: str, host_path: str)->Tuple[int, str, str]:
+        return self.sandbox.copy_from_container(container_path, host_path)
+
 class CallExecutor:
     max_turns_try_function:int
     use_sandbox:bool=False
@@ -349,6 +355,22 @@ class CallExecutor:
         if self.sandbox is not None:
             self.sandbox.stop()
 
+    def run_in_local(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
+        try:
+            tool_func=tool_map.get(tc_name)
+            args=json.loads(tc_args)
+            result_data=tool_func(**args)
+            print(f"工具执行结果: {result_data}")
+        except Exception as e:
+            result_data = f"工具执行出错: {e}"
+            print(result_data)
+
+        data.append_callresult({"call_id": tc_id,
+                            "output": result_data,
+                            "type": "function_call_output"
+                        })
+        return data
+
     def run_in_sandbox(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
         if self.need_init_flag:
             self.need_init_flag=False
@@ -366,8 +388,14 @@ class CallExecutor:
             return data
         try:
             args=json.loads(tc_args)
-            script_name=args["script_name"]
-            script_args=args["script_args"]
+            
+            script_name=args.get("script_name",None) #args["script_name"]
+            script_args=args.get("script_args",None) #args["script_args"]
+
+            #如果script_name中包含host_scripts_dir,则需要去掉
+            if self.host_scripts_dir in script_name:
+                script_name=script_name.replace(self.host_scripts_dir,"")
+
             result_data=self.sandbox.run(name=script_name, args=script_args)
             print(f"sandbox执行结果: {result_data}")
         except Exception as e:
@@ -380,68 +408,24 @@ class CallExecutor:
                         })   
         
         return data
+    
+    def save_file(self,container_path: str, host_path: str)->Tuple[int, str, str]:
+        return self.sandbox.save_file(container_path, host_path)
 
-    def run(self, data:ActorData) -> ActorData:
-        checklist=data.get_checklist()  
-
-        for idx, detail, decision, reason in checklist:
-            tc_id=detail[0]
-            tc_name=detail[1]
-            tc_args=detail[2]
-
-            if decision == 'y':
-                #self.state.approve(self.result.interruptions[idx])
-                print(f"<{idx}> {detail} 审批：通过")
-                #尝试运行多次
-                for idx_time in range(self.max_turns_try_function):#todo:考虑是否需要尝试多次
-                    tool_func=tool_map.get(tc_name)
-                    if tc_name=="execute_script":
-                        #执行脚本需要在沙箱中运行
-                        data=self.run_in_sandbox(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
-                        break#执行脚本后，跳出循环。无法保证脚本具有幂等性。
-
-                    elif tool_func is not None:
-                        try:
-                            args=json.loads(tc_args)
-                            result_data=tool_func(**args)
-                            print(f"工具执行结果: {result_data}")
-                        except Exception as e:
-                            result_data = f"工具执行出错: {e}"
-                            print(result_data)
-
-                        data.append_callresult({"call_id": tc_id,
-                                            "output": result_data,
-                                            "type": "function_call_output"
-                                        })
-                        break
-                    else:
-                        print(f"未知工具 {tc_name}，跳过。")
-                        data.append_callresult({"call_id": tc_id,
-                                            "output": f"错误：未知工具 {tc_name}",
-                                            "type": "function_call_output"
-                                        })
-                        
-            else:
-                print(f"<{idx}> {detail} 审批：拒绝 原因:{reason}")
-                data.append_callresult({"call_id": tc_id,
-                                "output": "用户拒绝了该工具调用。请不要再尝试调用该工具。",
-                                "type": "function_call_output"
-                            })
-            
-        return data
+ProductType=Annotated[Literal["PT_FILE", "PT_STRING"],Field(description="产物类型，仅支持文件（PT_FILE）和字符串（PT_STRING）")]
 
 class Product:
-
-    data:dict[str, list[tuple[str, str]]]=[]
-
     question:str
-    type:str
-    product:str
-    def __init__(self,question:str,type:str,product:str):
+    type:ProductType
+    data:str
+    file_path:str=None
+    file_name:str=None
+    def __init__(self,question:str,type:ProductType,data:str):
         self.question=question
         self.type=type
-        self.product=product
-
+        self.data=data
+        if self.type=="PT_FILE":
+            self.file_path, self.file_name = os.path.split(data)
 
 class WorkSpace:
     work_dir:str
@@ -451,7 +435,8 @@ class WorkSpace:
     use_sandbox:bool=False
     enable_sandbox:bool=False
     session_id:str
-    product:dict[str, list[tuple[str, str]]]=[]
+    products:dict[str, list[Product]]={}
+    
 
     def __init__(self,user_config:UserConfig):
         self.session_id=user_config.session_id
@@ -493,18 +478,61 @@ class WorkSpace:
         self.call_executor=CallExecutor(user_config_real)
 
     def run(self, data:ActorData) -> ActorData:
-        return self.call_executor.run(data)
+        checklist=data.get_checklist()  
+
+        for idx, detail, decision, reason in checklist:
+            tc_id=detail[0]
+            tc_name=detail[1]
+            tc_args=detail[2]
+
+            if decision == 'y':
+                #self.state.approve(self.result.interruptions[idx])
+                print(f"<{idx}> {detail} 审批：通过")
+                if tc_name=="execute_script":
+                    #执行脚本需要在沙箱中运行
+                    data=self.call_executor.run_in_sandbox(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
+                else:
+                    # 其他工具需要在本地运行
+                    if tc_name in tool_map.keys():
+                        data=self.call_executor.run_in_local(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
+                    else:
+                        print(f"未知工具 {tc_name}，跳过。")
+                        data.append_callresult({"call_id": tc_id,
+                                            "output": f"错误：未知工具 {tc_name}",
+                                            "type": "function_call_output"
+                                        })
+            else:
+                print(f"<{idx}> {detail} 审批：拒绝 原因:{reason}")
+                data.append_callresult({"call_id": tc_id,
+                                "output": "用户拒绝了该工具调用。请不要再尝试调用该工具。",
+                                "type": "function_call_output"
+                            })
+            
+        return data
 
     def make_product(self,question:str,type:str,product:str)->str:
         # 生成产物
         if question not in self.product:
             self.product[question]=[]
-        self.product[question].append((type,product))
+        self.product[question].append(Product(question,type,product))
 
-    def save_product(self,data:ActorData,product:str)->None:
+    def save_product(self,question:str|list|None=None)->None:
         # 保存产物
-        pass
-    
+        # 将产物中的文件保存到保存目录
+        tmplist=[]
+        if question is None:
+            tmplist=self.products.keys()
+        elif type(question)==str:
+            tmplist=[question]
+        elif type(question)==list:
+            tmplist=question
+
+        for q in tmplist:
+            for p in self.products[q]:
+                if p.type=="PT_FILE":
+                    #todo:如果有很多文件和目录层级，如何保证它们的位置关系呢？例如：/a/b/c.txt 保存到 /save/a/b/c.txt
+                    self.call_executor.save_file(p.file_path,os.path.join(self.save_dir,p.file_name))
+
 
     def stop(self):
         self.call_executor.stop()
@@ -1100,7 +1128,8 @@ async def Test6():
     if flag==False:
         print(reason_str)
 
-    provider = global_model_store.get_model(env_model, env_base_url)
+    model_name="moophlo/Qwen3-Coder-30B-A3B-Instruct-GGUF:latest"
+    provider = global_model_store.get_model(model_name, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("脚本小助手")
     msghis=global_message_manager.get_messages(user_id,cid)
@@ -1139,3 +1168,38 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+'''
+(envXYJ) thbytwo@thbytwopower:~/testCode/xuyuanji$  cd /home/thbytwo/testCode/xuyuanji ; /usr/bin/env /home/thbytwo/miniforge3/envs/envXYJ/bin/python /home/thbytwo/.vscode-server/extensions/ms-python.debugpy-2025.18.0/bundled/libs/debugpy/adapter/../../debugpy/launcher 40865 -- /home/thbytwo/testCode/xuyuanji/agent/main.py 
+/home/thbytwo/testCode/xuyuanji
+Scanning directory: /home/thbytwo/testCode/xuyuanji/agent/tools
+Found file: weather.py
+Found file: basic_tool.py
+Found file: news.py
+Found file: calculator.py
+Found file: loader.py
+Total tools found: 16
+Loaded tools: ['get_weather', 'create_dir', 'delete_dir', 'delete_file', 'execute_script', 'get_current_datetime', 'read_file', 'read_file_lines', 'search_file', 'web_search', 'write_file', 'get_todays_news', 'add', 'div', 'multi', 'sub']
+用户没有任何对话
+用户创建对话conversation_1 对话1
+需要人工授权才能继续。
+<0> ('call_71if5jks', 'write_file', '{"filename":"/home/thbytwo/testCode/xuyuanji/agent/output_test_user_1_session_1/get_mac.py","content":"# 获取本机MAC地址\\nimport uuid\\n\\ndef get_mac_address():\\n    # 获取本机MAC地址\\n    mac = uuid.getnode()\\n    # 格式化为标准MAC地址格式\\n    mac_hex = \':\'.join([\'{:02x}\'.format((mac \\u003e\\u003e elements) \\u0026 0xff) for elements in range(0, 2*6, 2)][::-1])\\n    return mac_hex\\n\\nif __name__ == \\"__main__\\":\\n    print(\\"本机MAC地址为:\\", get_mac_address())"}') 审批：通过
+工具执行结果: 文件写入成功。
+<1> ('call_gokftwla', 'execute_script', '{"script_name":"/home/thbytwo/testCode/xuyuanji/agent/output_test_user_1_session_1/get_mac.py"}') 审批：通过
+sandbox执行结果: python: can't open file '/home/thbytwo/testCode/xuyuanji/agent/output_test_user_1_session_1/get_mac.py': [Errno 2] No such file or directory
+
+恢复运行...
+需要人工授权才能继续。
+<0> ('call_uhd3jguo', 'execute_script', '{"script_name":"get_mac.py","script_args":null}') 审批：通过
+sandbox执行结果: 本机MAC地址为: bd:f4:d0:42:09:26
+
+恢复运行...
+
+助手: 通过执行脚本，我已经成功获取了本机的MAC地址。
+
+结果如下：
+本机MAC地址为: bd:f4:d0:42:09:26
+
+这个MAC地址是计算机网络接口的唯一标识符，用于在网络中识别设备。
+(envXYJ) thbytwo@thbytwopower:~/testCode/xuyuanji$ 
+'''
