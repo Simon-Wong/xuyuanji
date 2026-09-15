@@ -18,6 +18,8 @@ from openai_agents_providers import OllamaProvider
 from typing import Annotated, Literal,Any,Tuple
 from pydantic import Field,BaseModel
 import json
+import datetime
+import uuid
 
 from agent.configuration import UserConfig
 
@@ -219,17 +221,24 @@ class ActorStatus(Enum):
     CALL_RESULT:int=3
 
 class ActorData:
+    actor_id:str=""
+    id:str=""
     status:ActorStatus#表示状态
     result:str#表示结果，用于显示给用户
     checklist:CheckList#检查列表，用于执行工具
     callresults:MsgHis#存储工具调用结果
 
-    def __init__(self,status:ActorStatus,result:str,checklist:CheckList=[]):
+    def __init__(self,actor_id:str,status:ActorStatus,result:str,checklist:CheckList=[]):
+        self.id=actor_id
         self.status=status
         self.result=result
         self.checklist=checklist
         self.callresults=MsgHis()
+        self.id=actor_id+"_"+uuid.uuid4().hex
 
+    def get_id(self)->str:
+        return self.id
+    
     def get_checklist(self)->CheckList:
         return self.checklist
 
@@ -392,7 +401,8 @@ class CallExecutor:
             script_name=args.get("script_name",None) #args["script_name"]
             script_args=args.get("script_args",None) #args["script_args"]
 
-            #如果script_name中包含host_scripts_dir,则需要去掉
+            #todo:有待调试
+            #如果script_name中包含host_scripts_dir,则需要去掉。
             if self.host_scripts_dir in script_name:
                 script_name=script_name.replace(self.host_scripts_dir,"")
 
@@ -742,6 +752,7 @@ class Actor:
     last_input:InputStr
     debug_need_same_answer:bool
     user_config:UserConfig
+    id:str
 
     def __init__(self, agent: Agent, run_config: RunConfig,msghis:MsgHis,user_config:UserConfig):
         self.agent = agent
@@ -753,11 +764,15 @@ class Actor:
         self.last_input=None
         self.debug_need_same_answer=user_config.debug_need_same_answer
         self.user_config=user_config
+        self.id=user_config.user_id+"_"+datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")+"_"+uuid.uuid4().hex
 
     def set_msghis(self,msghis:MsgHis):
         self.msghis=msghis
     def get_msghis(self)->MsgHis:
         return self.msghis#self.result.to_input_list()
+
+    def get_id(self)->str:
+        return self.id
 
     def set_debug_need_same_answer(self,flag:bool):
         self.debug_need_same_answer=flag
@@ -816,7 +831,7 @@ class Actor:
                 msg_assistant=self._make_role_input("assistant",cache_result)
                 self.msghis.append(msg_assistant)
 
-                return ActorData(ActorStatus.FINAL_RESULT,
+                return ActorData(self.id,ActorStatus.FINAL_RESULT,
                                  cache_result)
 
         if role is not None and input is not None and actor_data is None:# 开始新的运行            
@@ -828,7 +843,7 @@ class Actor:
 
             if self.result.interruptions:
                 tmplist = self._collect_interruptions()
-                return ActorData(ActorStatus.CHECKLIST,
+                return ActorData(self.id,ActorStatus.CHECKLIST,
                                  "需要审批的工具调用。请检查并批准或拒绝。",
                                  tmplist)
             
@@ -837,7 +852,7 @@ class Actor:
             if self.debug_need_same_answer==True:
                 self.cache.set(self._get_last_input(),final_output)
 
-            return ActorData(ActorStatus.FINAL_RESULT,
+            return ActorData(self.id,ActorStatus.FINAL_RESULT,
                              final_output)
 
         elif role is None and input is None and actor_data is not None:
@@ -858,7 +873,7 @@ class Actor:
 
             if self.result.interruptions:
                 tmplist = self._collect_interruptions()
-                return ActorData(ActorStatus.CHECKLIST,
+                return ActorData(self.id,ActorStatus.CHECKLIST,
                                  "需要审批的工具调用。请检查并批准或拒绝。",
                                  tmplist)
                         
@@ -867,12 +882,12 @@ class Actor:
             if self.debug_need_same_answer==True:
                 self.cache.set(self._get_last_input(),final_output)
 
-            return ActorData(ActorStatus.FINAL_RESULT,
+            return ActorData(self.id,ActorStatus.FINAL_RESULT,
                              final_output,
                              [])
 
         else:
-            return ActorData(ActorStatus.BAD_PARAM,'''错误的参数，仅支持：
+            return ActorData(self.id,ActorStatus.BAD_PARAM,'''错误的参数，仅支持：
                     if checklist is None and role is not None and input is not None:# 开始新的运行            
                     elif role is None and input is None and checklist is not None:# 查看审批结果但不执行函数
                     elif role is None and input is not None and checklist is None:# 获取函数执行结果后继续运行
@@ -1137,7 +1152,7 @@ async def Test6():
     workspace=global_workspace_manager.get_workspace(user_cfg,cid)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
-    tmpinput="编写一个脚本，获取本机MAC地址并打印出来。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
+    tmpinput="编写一个脚本，获取本机MAC地址。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
     actor_data:ActorData=await actor.play(role="user",input=tmpinput)
     while actor_data.status!=ActorStatus.FINAL_RESULT:
         if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
