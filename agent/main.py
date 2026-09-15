@@ -28,10 +28,10 @@ from sandboxex import PersistentScriptSandbox
 from tools import load_tools_from_folder
 all_tools,tool_map = load_tools_from_folder()
 print("Loaded tools:", [t.name for t in all_tools])
-tool_names=tool_map.keys()
+tool_names = list(tool_map.keys())
 product_tools=[]
-if "read_file" in tool_names and "write_file" in tool_names and "read_file_lines" in tool_names and "edit_file_lines" in tool_names:
-    product_tools=["read_file","write_file","read_file_lines","edit_file_lines"]
+if "write_file" in tool_names and "edit_file_lines" in tool_names:
+    product_tools=["write_file","edit_file_lines"]
 
 set_tracing_disabled(True)
 
@@ -367,13 +367,17 @@ class CallExecutor:
         if self.sandbox is not None:
             self.sandbox.stop()
 
-    def run_in_local(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
+    def run_in_local(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> tuple[bool,ActorData]:
+        flag:bool=True
+        result_data=""
+
         try:
             tool_func=tool_map.get(tc_name)
             args=json.loads(tc_args)
             result_data=tool_func(**args)
             print(f"工具执行结果: {result_data}")
         except Exception as e:
+            flag=False
             result_data = f"工具执行出错: {e}"
             print(result_data)
 
@@ -381,9 +385,12 @@ class CallExecutor:
                             "output": result_data,
                             "type": "function_call_output"
                         })
-        return data
+        return flag,data
 
-    def run_in_sandbox(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> ActorData:
+    def run_in_sandbox(self,tc_id:str,tc_name: str,tc_args: str,data:ActorData) -> tuple[bool,ActorData]:
+        flag:bool=True
+        result_data=""
+
         if self.need_init_flag:
             self.need_init_flag=False
             self.sandbox=Sandboxex(sandbox_type=self.sandbox_type,
@@ -397,7 +404,8 @@ class CallExecutor:
                             "output": "用户没有权限使用沙箱执行脚本。请不要再尝试调用该工具。",
                             "type": "function_call_output"
                         })
-            return data
+            flag=False
+            return flag,data
         try:
             args=json.loads(tc_args)
             
@@ -407,11 +415,16 @@ class CallExecutor:
             #todo:有待调试
             #如果script_name中包含host_scripts_dir,则需要去掉。
             if self.host_scripts_dir in script_name:
-                script_name=script_name.replace(self.host_scripts_dir,"")
-
+                #self.host_scripts_dir的结尾要有一个'/'
+                if self.host_scripts_dir.endswith("/"):
+                    script_name=script_name.replace(self.host_scripts_dir,"")
+                else:
+                    script_name=script_name.replace(self.host_scripts_dir+"/","")
+                
             result_data=self.sandbox.run(name=script_name, args=script_args)
             print(f"sandbox执行结果: {result_data}")
         except Exception as e:
+            flag=False
             result_data = f"sandbox执行出错: {e}"
             print(result_data)
 
@@ -420,7 +433,7 @@ class CallExecutor:
                             "type": "function_call_output"
                         })   
         
-        return data
+        return flag,data
     
     def save_file(self,container_path: str, host_path: str)->Tuple[int, str, str]:
         return self.sandbox.save_file(container_path, host_path)
@@ -490,7 +503,14 @@ class WorkSpace:
         user_config_real.save_dir=self.save_dir
         self.call_executor=CallExecutor(user_config_real)
 
-    def run(self, data:ActorData) -> ActorData:
+    def retrieve_file_name(self,tc_args: str)->str:
+        args=json.loads(tc_args)
+        filename=args.get("filename",None)
+        if filename is None:
+            return ""
+        return filename
+
+    def run(self, data:ActorData,question:str|None=None) -> ActorData:
         checklist=data.get_checklist()  
 
         for idx, detail, decision, reason in checklist:
@@ -503,11 +523,17 @@ class WorkSpace:
                 print(f"<{idx}> {detail} 审批：通过")
                 if tc_name=="execute_script":
                     #执行脚本需要在沙箱中运行
-                    data=self.call_executor.run_in_sandbox(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
+                    flag,data=self.call_executor.run_in_sandbox(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
                 else:
                     # 其他工具需要在本地运行
                     if tc_name in tool_map.keys():
-                        data=self.call_executor.run_in_local(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
+                        flag,data=self.call_executor.run_in_local(tc_id,tc_name,tc_args,data)#这里在内部形成了结果字符串
+
+                        # 生成产物
+                        if tc_name in product_tools and question is not None and flag:    
+                            filename=self.retrieve_file_name(tc_args)
+                            self.make_product(question,"PT_FILE",filename)
+
                     else:
                         print(f"未知工具 {tc_name}，跳过。")
                         data.append_callresult({"call_id": tc_id,
@@ -523,28 +549,40 @@ class WorkSpace:
             
         return data
 
-    def make_product(self,question:str,type:str,product:str)->str:
+    def make_product(self,question:str,type:str,data:str)->str:
         # 生成产物
-        if question not in self.product:
-            self.product[question]=[]
-        self.product[question].append(Product(question,type,product))
+        if question not in self.products:
+            self.products[question]=[]
+        self.products[question].append(Product(question,type,data))
 
     def save_product(self,question:str|list|None=None)->None:
         # 保存产物
         # 将产物中的文件保存到保存目录
-        tmplist=[]
+        listquestions=[]
         if question is None:
-            tmplist=self.products.keys()
+            listquestions=self.products.keys()
         elif type(question)==str:
-            tmplist=[question]
+            listquestions=[question]
         elif type(question)==list:
-            tmplist=question
+            listquestions=question
 
-        for q in tmplist:
+        tmpset=set()
+        dictproducts:dict[str, list[Product]]={}
+
+        for q in listquestions:
+            dictproducts[q]=[]
             for p in self.products[q]:
                 if p.type=="PT_FILE":
-                    #todo:如果有很多文件和目录层级，如何保证它们的位置关系呢？例如：/a/b/c.txt 保存到 /save/a/b/c.txt
-                    self.call_executor.save_file(p.file_path,os.path.join(self.save_dir,p.file_name))
+                    if p.data not in tmpset:
+                        tmpset.add(p.data)
+                        dictproducts[q].append(p)
+
+
+        #todo:如果有很多文件和目录层级，如何保证它们的位置关系呢？例如：/a/b/c.txt 保存到 /save/a/b/c.txt
+        for q in dictproducts.keys():
+            for p in dictproducts[q]:
+                if p.file_name.endswith(".py"):
+                    self.call_executor.save_file("/scripts/"+p.file_name,os.path.join(self.save_dir,p.file_name))
 
 
     def stop(self):
@@ -756,6 +794,7 @@ class Actor:
     debug_need_same_answer:bool
     user_config:UserConfig
     id:str
+    question:str
 
     def __init__(self, agent: Agent, run_config: RunConfig,msghis:MsgHis,user_config:UserConfig):
         self.agent = agent
@@ -768,11 +807,18 @@ class Actor:
         self.debug_need_same_answer=user_config.debug_need_same_answer
         self.user_config=user_config
         self.id=user_config.user_id+"_"+datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")+"_"+uuid.uuid4().hex
+        self.question=""
 
     def set_msghis(self,msghis:MsgHis):
         self.msghis=msghis
     def get_msghis(self)->MsgHis:
         return self.msghis#self.result.to_input_list()
+
+    def set_question(self,question:str):
+        self.question=question
+    
+    def get_question(self)->str:
+        return self.question
 
     def get_id(self)->str:
         return self.id
@@ -895,6 +941,17 @@ class Actor:
                     elif role is None and input is None and checklist is not None:# 查看审批结果但不执行函数
                     elif role is None and input is not None and checklist is None:# 获取函数执行结果后继续运行
                                                         ''', [])
+class ActorManager:
+    def __init__(self):
+        self.actors={}
+    def add_actor(self,actor:Actor):
+        self.actors[actor.get_id()]=actor
+    def get_actor(self,actor_id:str)->Actor:
+        return self.actors[actor_id]
+    def get_actor_question(self,actor_id:str)->str:
+        return self.actors[actor_id].get_question()
+
+global_actor_manager=ActorManager()
 
 async def Test1():
     user_id="test_user_1"
@@ -1147,7 +1204,7 @@ async def Test6():
         print(reason_str)
 
     model_name="moophlo/Qwen3-Coder-30B-A3B-Instruct-GGUF:latest"
-    provider = global_model_store.get_model(env_model, env_base_url)
+    provider = global_model_store.get_model(model_name, env_base_url)
     run_config = RunConfig(model_provider=provider)
     _,agent,_=global_agent_store.get_agent("脚本小助手")
     msghis=global_message_manager.get_messages(user_id,cid)
@@ -1155,21 +1212,26 @@ async def Test6():
     workspace=global_workspace_manager.get_workspace(user_cfg,cid)
 
     actor=Actor(agent,run_config,msghis,user_cfg)
+    global_actor_manager.add_actor(actor)
     tmpinput="编写一个脚本，获取本机MAC地址。执行这个脚本并告诉我结果\n"+workspace.append_prompt()
     actor_data:ActorData=await actor.play(role="user",input=tmpinput)#开始运行，始终以actor_id为贯穿线索
+    actor.set_question(tmpinput)
     while actor_data.status!=ActorStatus.FINAL_RESULT:
         if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
             #假装外部已经审批
             actor_data.check_done()
 
         if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=workspace.run(actor_data)
+            question=global_actor_manager.get_actor_question(actor_data.get_actor_id())
+            actor_data=workspace.run(actor_data,question)
 
         if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
             if actor_data.get_actor_id()==actor.get_id():#确保是当前actor的运行结果，以继续运行。
                 actor_data=await actor.play(actor_data=actor_data)
 
     print(f"\n助手: {actor_data.result}")
+
+    workspace.save_product()
 
     closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
     for ccid in closed_cids:

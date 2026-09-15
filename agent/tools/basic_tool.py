@@ -70,33 +70,33 @@ def write_file(filename:str,content:str)->None:
     return "文件写入成功。"
 
 @function_tool(needs_approval=True)
-def read_file_lines(filepath:str,from_line:int,to_line:int)->str:
+def read_file_lines(filename:str,from_line:int,to_line:int)->str:
     '''
     读取文件中的指定行
-    :param filepath: 文件路径
+    :param filename: 文件路径
     :param from_line: 开始行号（包含）
     :param to_line: 结束行号（包含）
     :return: 指定行内容
     '''
-    with open(filepath, 'r', encoding='utf-8') as file:
+    with open(filename, 'r', encoding='utf-8') as file:
         lines = file.readlines()
         return "\n".join(lines[from_line-1:to_line])
 
-
-def edit_file_lines(filepath:str,from_line:int,to_line:int,text:str)->str:
+@function_tool(needs_approval=True)
+def edit_file_lines(filename:str,from_line:int,to_line:int,text:str)->str:
     '''
     改写文件中的指定行
-    :param filepath: 文件路径
+    :param filename: 文件路径
     :param from_line: 开始行号（包含）
     :param to_line: 结束行号（包含）
     :param text: 改写内容
     :return: 是否成功改写
     '''
     try:
-        with open(filepath, 'r', encoding='utf-8') as file:
+        with open(filename, 'r', encoding='utf-8') as file:
             lines = file.readlines()
         lines[from_line-1:to_line] = [text+"\n"]
-        with open(filepath, 'w', encoding='utf-8') as file:
+        with open(filename, 'w', encoding='utf-8') as file:
             file.writelines(lines)
         return "文件成功改写。"
     except Exception as e:
@@ -129,14 +129,14 @@ def delete_dir(dir:str)->None:
         return "目录不存在。"
 
 @function_tool(needs_approval=True)
-def delete_file(file:str)->None:
+def delete_file(filename:str)->None:
     '''
     删除文件
-    :param file: 文件路径
+    :param filename: 文件路径
     :return: None
     '''
-    if os.path.exists(file) and file != "/":
-        os.remove(file)
+    if os.path.exists(filename) and filename != "/":
+        os.remove(filename)
         return "文件删除成功。"
     else:
         return "文件不存在。"
