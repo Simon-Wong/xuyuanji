@@ -20,7 +20,7 @@ class ModelStore:
         key=self._make_key(model_name, base_url)
         self.all_models[key]=OllamaProvider(model=model_name,base_url=base_url)
 
-    def get_model(self, model_name: str, base_url: str|None)->OllamaProvider:
+    def get_model_provider(self, model_name: str, base_url: str|None)->OllamaProvider:
         if base_url is None:
             base_url=self.default_url
         key=self._make_key(model_name, base_url)

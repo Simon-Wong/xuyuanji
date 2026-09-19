@@ -25,7 +25,6 @@ EventBus：事件驱动核心组件
 5 层主题顺序：user_id . session_id . conversation_id . object_id . event_type
 通配符：* 单层  /  > 多层末尾
 """
-from __future__ import annotations
 
 import queue
 import sys
