@@ -3,17 +3,19 @@
 StateMachine：基于 EventBus 的轻量状态机
 =========================================
 
-设计（v2）：
+设计（v3）：
   - 状态存储在 StateMachine 内部的 _object_states: dict[str, str] 中
   - 对象 data 字段保持 Any 类型，完全不污染
-  - handler 注册到 bus.register_event，通过事件管道自动驱动
+  - handler 通过 bus.subscribe 精准匹配到对象级别
+  - register_event before/after 留给审计、日志等横向切面
+
+处理路径逻辑分离：
+  register_event before/after → 审计、日志、预处理（所有对象通用）
+  subscribe（通配符按对象匹配）→ 状态机（只处理绑定的对象）
 
 回调签名：
   GuardCallback  = (bus: EventBus, event: Event, obj_data: Any) -> bool
   StateCallback  = (bus: EventBus, event: Event, obj_data: Any) -> None
-
-bus → 事件管道，负责分发
-状态机 → 挂在管道上的处理器，维护状态转移逻辑
 """
 
 from typing import Any, Callable
@@ -29,9 +31,8 @@ class StateMachine:
         self._initial_state: str | None = None
         self._states: dict[str, dict] = {}
         self._transitions: dict[str, dict[str, tuple[str, GuardCallback | None, StateCallback | None]]] = {}
-        self._registered_event_types: set[str] = set()
-        self._attached_objects: set[str] = set()
         self._object_states: dict[str, str] = {}
+        self._subscriptions: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------------
     # 声明式 API
@@ -56,17 +57,15 @@ class StateMachine:
         return self
 
     # ------------------------------------------------------------------
-    # 绑定 / 解绑
+    # 绑定 / 解绑（基于 subscribe，按对象精准匹配）
     # ------------------------------------------------------------------
     def attach(self, object_id: str):
-        if object_id in self._attached_objects:
+        if object_id in self._subscriptions:
             return
 
-        # 初始化状态（不碰对象 data）
         if object_id not in self._object_states:
             self._object_states[object_id] = self._initial_state
 
-        # 触发初始状态的 on_enter
         current = self._object_states[object_id]
         if current and current in self._states:
             enter_cb = self._states[current].get("on_enter")
@@ -74,34 +73,35 @@ class StateMachine:
                 obj_data = self.bus.get_object(object_id)
                 enter_cb(self.bus, _make_init_event(object_id), obj_data)
 
-        # 注册 handler 到 EventBus
         all_event_types: set[str] = set()
         for trans_map in self._transitions.values():
             all_event_types.update(trans_map.keys())
 
+        sub_ids: list[str] = []
+        handler = self._make_handler()
         for et in all_event_types:
-            if et not in self._registered_event_types:
-                self.bus.register_event(et, [self._make_handler()])
-                self._registered_event_types.add(et)
+            pattern = f"*.*.*.{object_id}.{et}"
+            sub_id = self.bus.subscribe(pattern, handler)
+            sub_ids.append(sub_id)
 
-        self._attached_objects.add(object_id)
+        self._subscriptions[object_id] = sub_ids
 
     def detach(self, object_id: str):
-        self._attached_objects.discard(object_id)
+        sub_ids = self._subscriptions.pop(object_id, [])
+        for sid in sub_ids:
+            self.bus.unsubscribe(sid)
         self._object_states.pop(object_id, None)
 
     # ------------------------------------------------------------------
-    # 核心转移引擎
+    # 核心转移引擎（SubHandler 签名：topic, event）
     # ------------------------------------------------------------------
     def _make_handler(self):
         sm = self
 
-        def handler(bus: EventBus, event: Event):
+        def handler(topic: str, event: Event):
             oid = event.object_id
-            if oid not in sm._attached_objects:
-                return
 
-            obj_data = bus.get_object(oid)
+            obj_data = sm.bus.get_object(oid)
             if obj_data is None:
                 return
 
@@ -116,25 +116,25 @@ class StateMachine:
             to_state, guard, action = trans_map[event.event_type]
 
             # ① guard
-            if guard is not None and not guard(bus, event, obj_data):
+            if guard is not None and not guard(sm.bus, event, obj_data):
                 return
 
             # ② action
             if action is not None:
-                action(bus, event, obj_data)
+                action(sm.bus, event, obj_data)
 
             # ③ on_exit
             exit_cb = sm._states.get(current_state, {}).get("on_exit")
             if exit_cb:
-                exit_cb(bus, event, obj_data)
+                exit_cb(sm.bus, event, obj_data)
 
-            # ④ 状态变更（在自己的表里改，不碰 data）
+            # ④ 状态变更
             sm._object_states[oid] = to_state
 
             # ⑤ on_enter
             enter_cb = sm._states.get(to_state, {}).get("on_enter")
             if enter_cb:
-                enter_cb(bus, event, obj_data)
+                enter_cb(sm.bus, event, obj_data)
 
         return handler
 
@@ -164,8 +164,24 @@ def _make_init_event(object_id: str) -> Event:
     )
 
 if __name__ == "__main__":
+    import time
+
     bus = EventBus()
 
+    # ===== 横向切面：审计日志（register_event before/after，所有对象通用）=====
+    audit_log: list[str] = []
+
+    def audit_before(bus, event):
+        audit_log.append(f"[审计-before] event_type={event.event_type}, oid={event.object_id}")
+
+    def audit_after(bus, event):
+        audit_log.append(f"[审计-after] event_type={event.event_type}, oid={event.object_id}")
+
+    bus.register_event("用户输入", [audit_before], [audit_after])
+    bus.register_event("模型返回", [audit_before], [audit_after])
+    bus.register_event("超时",     [audit_before], [audit_after])
+
+    # ===== 对象级逻辑：状态机（subscribe，精准匹配到对象）=====
     sm = StateMachine(bus)
     sm.add_state("idle", initial=True)
     sm.add_state("processing")
@@ -174,21 +190,24 @@ if __name__ == "__main__":
     sm.add_transition("processing", "模型返回", "done")
     sm.add_transition("processing", "超时",     "idle")
 
-    # data 可以是任何类型，不再强制 dict
     oid1 = bus.register_object("u1", "s1", "c1", data="任意字符串")
     oid2 = bus.register_object("u2", "s2", "c2", data=[1, 2, 3])
 
     sm.attach(oid1)
-    sm.attach(oid2)
 
-    print(sm.get_state(oid1))  # idle
-    print(sm.get_state(oid2))  # idle
+    print(f"初始状态: oid1={sm.get_state(oid1)}, oid2={sm.get_state(oid2)}")
 
     bus.update_object(oid1, "用户输入")
-
-    import time
     time.sleep(0.1)
-    print(sm.get_state(oid1))  # processing
+    print(f"oid1 状态变为: {sm.get_state(oid1)}")
+
+    bus.update_object(oid2, "用户输入")
+    time.sleep(0.1)
+    print(f"oid2 状态不变: {sm.get_state(oid2)}")
+
+    print(f"\n审计日志 ({len(audit_log)} 条):")
+    for entry in audit_log:
+        print(f"  {entry}")
 
     sm.print_graph()
     bus.shutdown()
