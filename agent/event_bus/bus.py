@@ -35,8 +35,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-Handler = Callable[["EventBus", "Event"], None]
-SubHandler = Callable[[str, "Event"], None]
+Bus_EventHandler = Callable[["EventBus", "Event"], None]
+Bus_SubHandler = Callable[[str, "Event"], None]
 
 
 # ==============================================================================
@@ -46,12 +46,15 @@ SubHandler = Callable[[str, "Event"], None]
 class Event:
     event_id: str
     trace_id: str
+
     user_id: str
     session_id: str
     conversation_id: str
+    
     object_id: str
     event_type: str
     data: Any = None
+    
     timestamp: float = field(default_factory=time.time)
 
 
@@ -67,8 +70,8 @@ class EventBus:
         self._objects: dict[str, list[Any, dict]] = {}
 
         # 链条字典 + 订阅字典
-        self._chains: dict[str, tuple[list[Handler], list[Handler]]] = {}
-        self._subs:   dict[str, tuple[str, SubHandler, bool]] = {}
+        self._chains: dict[str, tuple[list[Bus_EventHandler], list[Bus_EventHandler]]] = {}
+        self._subs:   dict[str, tuple[str, Bus_SubHandler, bool]] = {}
 
         # 3 把独立锁（无嵌套持有，无死锁风险）
         self._objects_lock = threading.RLock()
@@ -142,18 +145,24 @@ class EventBus:
     # ----------------------------------------------------------------------
     # 公共 API 1/3：register_event（链条，追加模式）
     # ----------------------------------------------------------------------
-    def register_event(self, event_type: str, before: list[Handler], after: list[Handler]) -> None:
+    def register_event(self, event_type: str, 
+                       before: list[Bus_EventHandler]|None=None, 
+                       after: list[Bus_EventHandler]|None=None) -> None:
         with self._chains_lock:
             if event_type not in self._chains:
                 self._chains[event_type] = ([], [])
             cur_before, cur_after = self._chains[event_type]
+            if before is None:
+                before=[]
+            if after is None:
+                after=[]
             cur_before.extend(before)
             cur_after.extend(after)
 
     # ----------------------------------------------------------------------
     # 公共 API 2/3：subscribe / unsubscribe（5 层主题 pattern）
     # ----------------------------------------------------------------------
-    def subscribe(self, pattern: str, handler: SubHandler, *, once: bool = False) -> str:
+    def subscribe(self, pattern: str, handler: Bus_SubHandler, *, once: bool = False) -> str:
         # 合法性校验：> 只能出现在最后一位
         segs = pattern.split(".")
         for idx, s in enumerate(segs):
@@ -181,6 +190,7 @@ class EventBus:
         object_id: str | None = None,
         data: Any = None,
         trace_id: str | None = None,
+        event_type: str = "idle",
     ) -> str:
         if object_id is None:
             object_id = self._generate_id()
@@ -199,7 +209,7 @@ class EventBus:
             session_id=session_id,
             conversation_id=conversation_id,
             object_id=object_id,
-            event_type="idle",
+            event_type=event_type,
             data=data,
         )
         self._enqueue(event)

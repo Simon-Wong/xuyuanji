@@ -7,21 +7,27 @@ from agents import Agent, RunConfig
 from actor_stuff import Actor, ActorData, ActorStatus
 from configuration import UserConfig
 from workspace_stuff import WorkSpace
+from defination_types import MsgHis
 
-class UserBackend:
-    id:str=""#用户ID
+class ConversationBackend:
+    id:str=""#对话后端ID
+    user_id:str=""#用户ID
     session_id:str=""#会话ID
     cid:str=""#当前对话ID
     caption:str=""#当前对话标题
-    model:str=""#当前对话模型
+    base_model:str=""#当前对话模型
     base_url:str=""#当前对话模型提供者URL
 
-    provider:OllamaProvider=None#当前对话模型提供者
-    run_config:RunConfig=None#当前对话运行配置
+    #provider:OllamaProvider=None#当前对话模型提供者,可以用其他参数生成，不独立保存
+    #run_config:RunConfig=None#当前对话运行配置,可以用其他参数生成，不独立保存
+
     actors:dict[str, Actor]=None#当前对话用到的所有actor
     actor_datas:dict[str, ActorData]=None#当前对话用到的所有actor数据
     user_cfg:UserConfig=None#当前对话用户配置
     workspace:WorkSpace=None#当前对话工作空间
+    msghis:MsgHis=[]#当前对话消息记录
 
     def __init__(self):
-        pass
+        self.id=self.user_id+self.session_id+self.cid
+        self.actors={}
+        self.actor_datas={}

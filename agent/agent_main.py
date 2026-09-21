@@ -11,7 +11,6 @@ sys.path.append(str(ROOT_DIR))
 
 import asyncio
 import os
-
 from configuration import UserConfig
 
 from model_store import ModelStore
@@ -28,6 +27,7 @@ from pre_load import all_tools
 from event_bus import EventBus
 global_event_bus = EventBus()
        
+
 env_model=os.getenv("MODEL_NAME", "qwen3:4b")
 env_base_url=os.getenv("PROVIDER_URL", "http://192.168.0.119:11434/v1")
 
@@ -374,9 +374,18 @@ async def Test6():
     for ccid in closed_cids:
         global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
+
+from conversation_backend import ConversationBackend
+from dealwith_event_bus import BE_create_conversation_backend,BEH_create_conversation_backend
+from dealwith_event_bus import BE_create_actor_data,BEH_create_actor_data
+from dealwith_event_bus import BE_checklist,BEH_checklist
+from dealwith_event_bus import BE_update_actor_data,BEH_update_actor_data
+
 async def Test7():
+    #模拟用户登录
     user_id="test_user_1"
     session_id="session_1"
+
     global_user_session_conversation_manager.record_user_session(user_id,session_id)#模拟用户登录后注册会话
     cids=global_user_session_conversation_manager.get_conversations_id(user_id)#获取用户的对话列表
     cid=""
@@ -410,23 +419,73 @@ async def Test7():
     workspace=global_workspace_manager.get_workspace(user_cfg,cid)#获取工作空间
 
     actor=Actor(agent,run_config,msghis,user_cfg)
+
+    #模拟创建对话后端
+    cb1=ConversationBackend()
+    cb1.user_id=user_id
+    cb1.session_id=session_id
+    cb1.cid=cid
+    cb1.caption=caption
+    cb1.base_model=env_model
+    cb1.base_url=env_base_url
+    cb1.user_cfg=user_cfg
+    cb1.workspace=workspace
+    cb1.msghis=msghis
+
+    cb1.actors[actor.get_id()]=actor
+
+    #
+    #注册事件
+    #
+
+    #对话后端创建事件
+    global_event_bus.register_event(event_type=BE_create_conversation_backend,
+                                    before=[BEH_create_conversation_backend])
+    #注册ActorData创建事件
+    global_event_bus.register_event(event_type=BE_create_actor_data,
+                                    before=[BEH_create_actor_data])
+    #注册检查列表事件
+    global_event_bus.register_event(event_type=BE_checklist,
+                                    before=[BEH_checklist])
+    #注册ActorData更新事件
+    global_event_bus.register_event(event_type=BE_update_actor_data,
+                                    before=[BEH_update_actor_data])
+
+
+    #注册对话后端对象
+    global_event_bus.register_object(user_id=user_id,session_id=session_id,conversation_id=cid,
+                                     object_id=cb1.id,data=cb1,
+                                     trace_id=None,
+                                     event_type=BE_create_conversation_backend)
+
     actor_data:ActorData=await actor.play(role="user",input="娱乐圈最近有什么大新闻？")
-    while actor_data.status!=ActorStatus.FINAL_RESULT:
-        if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
-            #假装外部已经审批
-            actor_data.check_done()
 
-        if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-            actor_data=workspace.run(actor_data)
 
-        if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
-            actor_data=await actor.play(actor_data=actor_data)
 
-    print(f"\n助手: {actor_data.result}")
+    #注册ActorData对象
+    global_event_bus.register_object(user_id=user_id,session_id=session_id,conversation_id=cid,
+                                     object_id=actor_data.get_actor_id(),data=actor_data,
+                                     trace_id=None,
+                                     event_type=BE_create_actor_data)
+    
 
-    closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
-    for ccid in closed_cids:
-        global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
+
+    # while actor_data.status!=ActorStatus.FINAL_RESULT:
+    #     if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
+    #         #假装外部已经审批
+    #         actor_data.check_done()
+
+    #     if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
+    #         actor_data=workspace.run(actor_data)
+
+    #     if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
+    #         actor_data=await actor.play(actor_data=actor_data)
+
+    # print(f"\n助手: {actor_data.result}")
+
+    # closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
+    # for ccid in closed_cids:
+    #     global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
 
 async def main():

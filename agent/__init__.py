@@ -11,6 +11,14 @@ from .call_executor import CallExecutor
 from .workspace_stuff import WorkspaceManager,WorkSpace
 from .user_session_conversation_stuff import UserSessionConversation
 from .actor_stuff import ActorManager,ActorStatus,ActorData,Actor
+from .conversation_backend import ConversationBackend
+
+from .dealwith_event_bus import BE_create_conversation_backend,BEH_create_conversation_backend
+from .dealwith_event_bus import BE_create_actor_data,BEH_create_actor_data
+from .dealwith_event_bus import BE_checklist,BEH_checklist
+from .dealwith_event_bus import BE_update_actor_data,BEH_update_actor_data
+
+
 
 __all__=["product_tools","tool_names","all_tools","tool_map",
          "UserConfig",
@@ -23,5 +31,11 @@ __all__=["product_tools","tool_names","all_tools","tool_map",
          "CallExecutor",
          "WorkspaceManager","WorkSpace",
          "UserSessionConversation",
-         "ActorManager","ActorStatus","ActorData","Actor"
+         "ActorManager","ActorStatus","ActorData","Actor",
+         "ConversationBackend",
+         
+         "BE_create_conversation_backend","BEH_create_conversation_backend",
+         "BE_create_actor_data","BEH_create_actor_data",
+         "BE_checklist","BEH_checklist",
+         "BE_update_actor_data","BEH_update_actor_data",
          ]
