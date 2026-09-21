@@ -3,15 +3,16 @@
 StateMachine：基于 EventBus 的轻量状态机
 =========================================
 
-设计（v3）：
+设计（v3.1）：
   - 状态存储在 StateMachine 内部的 _object_states: dict[str, str] 中
   - 对象 data 字段保持 Any 类型，完全不污染
-  - handler 通过 bus.subscribe 精准匹配到对象级别
+  - handler 通过 bus.subscribe，利用 5 层主题通配符精准匹配
   - register_event before/after 留给审计、日志等横向切面
+  - attach 支持 user_id / session_id / conversation_id 控制作用范围
 
 处理路径逻辑分离：
   register_event before/after → 审计、日志、预处理（所有对象通用）
-  subscribe（通配符按对象匹配）→ 状态机（只处理绑定的对象）
+  subscribe（5 层主题通配符）→ 状态机（可按 user/session/conversation/object 分层控制）
 
 回调签名：
   GuardCallback  = (bus: EventBus, event: Event, obj_data: Any) -> bool
@@ -57,9 +58,24 @@ class StateMachine:
         return self
 
     # ------------------------------------------------------------------
-    # 绑定 / 解绑（基于 subscribe，按对象精准匹配）
+    # 绑定 / 解绑（基于 subscribe，5 层主题精准控制作用范围）
     # ------------------------------------------------------------------
-    def attach(self, object_id: str):
+    def attach(self, object_id: str, *,
+               user_id: str = "*",
+               session_id: str = "*",
+               conversation_id: str = "*"):
+        """将状态机绑定到指定对象。
+
+        通过 user_id / session_id / conversation_id 控制状态机在 5 层主题的
+        哪一层起作用，默认 * 表示匹配任意。
+
+        使用示例：
+          sm.attach(oid)                                         # 所有用户的所有事件
+          sm.attach(oid, user_id="u1")                           # 只处理 u1 的事件
+          sm.attach(oid, user_id="u1", session_id="s1")          # u1.s1 的事件
+          sm.attach(oid, user_id="u1", session_id="s1",
+                    conversation_id="c1")                        # 精确到具体对话
+        """
         if object_id in self._subscriptions:
             return
 
@@ -80,7 +96,7 @@ class StateMachine:
         sub_ids: list[str] = []
         handler = self._make_handler()
         for et in all_event_types:
-            pattern = f"*.*.*.{object_id}.{et}"
+            pattern = f"{user_id}.{session_id}.{conversation_id}.{object_id}.{et}"
             sub_id = self.bus.subscribe(pattern, handler)
             sub_ids.append(sub_id)
 
@@ -172,40 +188,45 @@ if __name__ == "__main__":
     audit_log: list[str] = []
 
     def audit_before(bus, event):
-        audit_log.append(f"[审计-before] event_type={event.event_type}, oid={event.object_id}")
+        audit_log.append(f"[审计-before] event_type={event.event_type} oid={event.object_id}")
 
     def audit_after(bus, event):
-        audit_log.append(f"[审计-after] event_type={event.event_type}, oid={event.object_id}")
+        audit_log.append(f"[审计-after]  event_type={event.event_type} oid={event.object_id}")
 
     bus.register_event("用户输入", [audit_before], [audit_after])
     bus.register_event("模型返回", [audit_before], [audit_after])
-    bus.register_event("超时",     [audit_before], [audit_after])
 
-    # ===== 对象级逻辑：状态机（subscribe，精准匹配到对象）=====
+    # ===== 对象级逻辑：状态机（subscribe，5 层主题控制作用范围）=====
     sm = StateMachine(bus)
     sm.add_state("idle", initial=True)
     sm.add_state("processing")
     sm.add_state("done")
     sm.add_transition("idle",       "用户输入", "processing")
     sm.add_transition("processing", "模型返回", "done")
-    sm.add_transition("processing", "超时",     "idle")
 
-    oid1 = bus.register_object("u1", "s1", "c1", data="任意字符串")
-    oid2 = bus.register_object("u2", "s2", "c2", data=[1, 2, 3])
+    oid = bus.register_object("u1", "s1", "c1", data="hello")
 
-    sm.attach(oid1)
+    # 只匹配 u1 用户的事件（其他用户触发的不走状态机）
+    sm.attach(oid, user_id="u1")
 
-    print(f"初始状态: oid1={sm.get_state(oid1)}, oid2={sm.get_state(oid2)}")
+    print(f"初始状态: {sm.get_state(oid)}")
 
-    bus.update_object(oid1, "用户输入")
+    # u1 触发 → 命中 pattern "u1.*.*.{oid}.用户输入" → 状态转移
+    bus.trigger_event("u1", "s1", "c1", oid, "用户输入")
     time.sleep(0.1)
-    print(f"oid1 状态变为: {sm.get_state(oid1)}")
+    print(f"u1 触发后: {sm.get_state(oid)}")
 
-    bus.update_object(oid2, "用户输入")
+    # u2 触发 → pattern "u1.*.*.{oid}.用户输入" 不匹配 → 状态不变
+    bus.trigger_event("u2", "s1", "c1", oid, "用户输入")
     time.sleep(0.1)
-    print(f"oid2 状态不变: {sm.get_state(oid2)}")
+    print(f"u2 触发后: {sm.get_state(oid)} (不变)")
 
-    print(f"\n审计日志 ({len(audit_log)} 条):")
+    # u1 继续 → 命中 → done
+    bus.trigger_event("u1", "s1", "c1", oid, "模型返回")
+    time.sleep(0.1)
+    print(f"u1 再次触发: {sm.get_state(oid)}")
+
+    print(f"\n审计日志 ({len(audit_log)} 条，u2 的事件也被记录了):")
     for entry in audit_log:
         print(f"  {entry}")
 
