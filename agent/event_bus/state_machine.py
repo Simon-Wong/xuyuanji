@@ -3,12 +3,14 @@
 StateMachine：基于 EventBus 的轻量状态机
 =========================================
 
-设计（v3.1）：
+设计（v3.2）：
   - 状态存储在 StateMachine 内部的 _object_states: dict[str, str] 中
   - 对象 data 字段保持 Any 类型，完全不污染
-  - handler 通过 bus.subscribe，利用 5 层主题通配符精准匹配
+  - handler 在构造时创建一次，所有对象共用
+  - 通过 bus.subscribe，利用 5 层主题通配符按对象精准匹配
   - register_event before/after 留给审计、日志等横向切面
   - attach 支持 user_id / session_id / conversation_id 控制作用范围
+  - 一个 StateMachine 实例可 attach 多个对象，规则共享，状态隔离
 
 处理路径逻辑分离：
   register_event before/after → 审计、日志、预处理（所有对象通用）
@@ -34,6 +36,7 @@ class StateMachine:
         self._transitions: dict[str, dict[str, tuple[str, GuardCallback | None, StateCallback | None]]] = {}
         self._object_states: dict[str, str] = {}
         self._subscriptions: dict[str, list[str]] = {}
+        self._handler = self._make_handler()
 
     # ------------------------------------------------------------------
     # 声明式 API
@@ -94,10 +97,9 @@ class StateMachine:
             all_event_types.update(trans_map.keys())
 
         sub_ids: list[str] = []
-        handler = self._make_handler()
         for et in all_event_types:
             pattern = f"{user_id}.{session_id}.{conversation_id}.{object_id}.{et}"
-            sub_id = self.bus.subscribe(pattern, handler)
+            sub_id = self.bus.subscribe(pattern, self._handler)#订阅事件。连接状态机和事件总线的关键代码。
             sub_ids.append(sub_id)
 
         self._subscriptions[object_id] = sub_ids
@@ -160,6 +162,9 @@ class StateMachine:
     def get_state(self, object_id: str) -> str | None:
         return self._object_states.get(object_id)
 
+    def list_states(self) -> dict[str, str]:
+        return dict(self._object_states)
+
     def print_graph(self):
         total = sum(len(v) for v in self._transitions.values())
         print(f"\nStateMachine graph ({len(self._states)} states, {total} transitions):")
@@ -196,7 +201,7 @@ if __name__ == "__main__":
     bus.register_event("用户输入", [audit_before], [audit_after])
     bus.register_event("模型返回", [audit_before], [audit_after])
 
-    # ===== 对象级逻辑：状态机（subscribe，5 层主题控制作用范围）=====
+    # ===== 一个状态机，多个对象（规则共享，状态隔离）=====
     sm = StateMachine(bus)
     sm.add_state("idle", initial=True)
     sm.add_state("processing")
@@ -204,29 +209,31 @@ if __name__ == "__main__":
     sm.add_transition("idle",       "用户输入", "processing")
     sm.add_transition("processing", "模型返回", "done")
 
-    oid = bus.register_object("u1", "s1", "c1", data="hello")
+    oid_a = bus.register_object("u1", "s1", "c1", data="对象A")
+    oid_b = bus.register_object("u1", "s1", "c1", data="对象B")
 
-    # 只匹配 u1 用户的事件（其他用户触发的不走状态机）
-    sm.attach(oid, user_id="u1")
+    sm.attach(oid_a, user_id="u1")
+    sm.attach(oid_b, user_id="u1")
 
-    print(f"初始状态: {sm.get_state(oid)}")
+    print(f"初始状态: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
 
-    # u1 触发 → 命中 pattern "u1.*.*.{oid}.用户输入" → 状态转移
-    bus.trigger_event("u1", "s1", "c1", oid, "用户输入")
+    bus.trigger_event("u1", "s1", "c1", oid_a, "用户输入")
     time.sleep(0.1)
-    print(f"u1 触发后: {sm.get_state(oid)}")
+    print(f"A 收到事件后: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
 
-    # u2 触发 → pattern "u1.*.*.{oid}.用户输入" 不匹配 → 状态不变
-    bus.trigger_event("u2", "s1", "c1", oid, "用户输入")
+    bus.trigger_event("u1", "s1", "c1", oid_b, "用户输入")
     time.sleep(0.1)
-    print(f"u2 触发后: {sm.get_state(oid)} (不变)")
+    print(f"B 收到事件后: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
 
-    # u1 继续 → 命中 → done
-    bus.trigger_event("u1", "s1", "c1", oid, "模型返回")
+    bus.trigger_event("u2", "s1", "c1", oid_a, "模型返回")
     time.sleep(0.1)
-    print(f"u1 再次触发: {sm.get_state(oid)}")
+    print(f"u2 触发 A: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)} (不变)")
 
-    print(f"\n审计日志 ({len(audit_log)} 条，u2 的事件也被记录了):")
+    bus.trigger_event("u1", "s1", "c1", oid_a, "模型返回")
+    time.sleep(0.1)
+    print(f"u1 触发 A 模型返回: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
+
+    print(f"\n审计日志 ({len(audit_log)} 条，所有事件都被记录):")
     for entry in audit_log:
         print(f"  {entry}")
 
