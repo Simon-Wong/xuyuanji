@@ -3,7 +3,7 @@
 StateMachine：基于 EventBus 的轻量状态机
 =========================================
 
-设计（v3.2）：
+设计（v3.3）：
   - 状态存储在 StateMachine 内部的 _object_states: dict[str, str] 中
   - 对象 data 字段保持 Any 类型，完全不污染
   - handler 在构造时创建一次，所有对象共用
@@ -193,47 +193,103 @@ if __name__ == "__main__":
     audit_log: list[str] = []
 
     def audit_before(bus, event):
-        audit_log.append(f"[审计-before] event_type={event.event_type} oid={event.object_id}")
+        audit_log.append(f"[审计] event_type={event.event_type} oid={event.object_id}")
 
-    def audit_after(bus, event):
-        audit_log.append(f"[审计-after]  event_type={event.event_type} oid={event.object_id}")
+    bus.register_event("接收任务", [audit_before], [])
+    bus.register_event("开始处理", [audit_before], [])
+    bus.register_event("处理完成", [audit_before], [])
 
-    bus.register_event("用户输入", [audit_before], [audit_after])
-    bus.register_event("模型返回", [audit_before], [audit_after])
-
-    # ===== 一个状态机，多个对象（规则共享，状态隔离）=====
+    # ===== 状态机（subscribe，一个规则驱动多个对象）=====
     sm = StateMachine(bus)
-    sm.add_state("idle", initial=True)
-    sm.add_state("processing")
-    sm.add_state("done")
-    sm.add_transition("idle",       "用户输入", "processing")
-    sm.add_transition("processing", "模型返回", "done")
+    sm.add_state("idle", initial=True,
+                 on_enter=lambda b, e, d: print(f"  [on_enter idle] oid={e.object_id}"))
+    sm.add_state("queued",
+                 on_enter=lambda b, e, d: print(f"  [on_enter queued] oid={e.object_id}"))
+    sm.add_state("processing",
+                 on_enter=lambda b, e, d: print(f"  [on_enter processing] oid={e.object_id}"),
+                 on_exit=lambda b, e, d: print(f"  [on_exit processing] 耗时={time.time()-d['started_at']:.2f}s"))
+    sm.add_state("completed",
+                 on_enter=lambda b, e, d: print(f"  [on_enter completed] oid={e.object_id}"))
 
-    oid_a = bus.register_object("u1", "s1", "c1", data="对象A")
-    oid_b = bus.register_object("u1", "s1", "c1", data="对象B")
+    # idle → queued: guard 检查任务优先级（priority <= 0 则拒绝）
+    def guard_has_priority(bus, event, data):
+        ok = data.get("priority", 0) > 0
+        if not ok:
+            print(f"  [guard 拦截] priority={data.get('priority')}，拒绝入队")
+        return ok
+
+    sm.add_transition("idle",     "接收任务", "queued",
+                      guard=guard_has_priority,
+                      action=lambda b, e, d: d.update(queue_time=time.time()))
+
+    # queued → processing: action 记录开始时间
+    sm.add_transition("queued",   "开始处理", "processing",
+                      action=lambda b, e, d: d.update(started_at=time.time()))
+
+    # processing → completed
+    sm.add_transition("processing", "处理完成", "completed")
+
+    # ===== 三个对象，三种命运 =====
+    # 对象A：高优先级任务，正常走完流程
+    # 对象B：零优先级任务，guard 拦截（永远停在 idle）
+    # 对象C：admin 专属任务，只响应 u_admin 的事件
+    oid_a = bus.register_object("u1", "s1", "c1", data={"name": "高优任务", "priority": 5})
+    oid_b = bus.register_object("u1", "s1", "c1", data={"name": "零优先任务", "priority": 0})
+    oid_c = bus.register_object("u_admin", "s1", "c1", data={"name": "管理员任务", "priority": 10})
 
     sm.attach(oid_a, user_id="u1")
     sm.attach(oid_b, user_id="u1")
+    sm.attach(oid_c, user_id="u_admin")
 
-    print(f"初始状态: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
+    print(f"初始状态: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}, C={sm.get_state(oid_c)}")
+    print()
 
-    bus.trigger_event("u1", "s1", "c1", oid_a, "用户输入")
-    time.sleep(0.1)
-    print(f"A 收到事件后: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
+    # --- 对象A：正常流程 ---
+    print("=== 对象A（priority=5）：正常流程 ===")
+    bus.trigger_event("u1", "s1", "c1", oid_a, "接收任务")
+    time.sleep(0.05)
+    print(f"  → A 状态: {sm.get_state(oid_a)}")
 
-    bus.trigger_event("u1", "s1", "c1", oid_b, "用户输入")
-    time.sleep(0.1)
-    print(f"B 收到事件后: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
+    bus.trigger_event("u1", "s1", "c1", oid_a, "开始处理")
+    time.sleep(0.05)
+    print(f"  → A 状态: {sm.get_state(oid_a)}")
 
-    bus.trigger_event("u2", "s1", "c1", oid_a, "模型返回")
-    time.sleep(0.1)
-    print(f"u2 触发 A: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)} (不变)")
+    bus.trigger_event("u1", "s1", "c1", oid_a, "处理完成")
+    time.sleep(0.05)
+    print(f"  → A 状态: {sm.get_state(oid_a)}")
+    print()
 
-    bus.trigger_event("u1", "s1", "c1", oid_a, "模型返回")
-    time.sleep(0.1)
-    print(f"u1 触发 A 模型返回: A={sm.get_state(oid_a)}, B={sm.get_state(oid_b)}")
+    # --- 对象B：guard 拦截 ---
+    print("=== 对象B（priority=0）：guard 拦截 ===")
+    bus.trigger_event("u1", "s1", "c1", oid_b, "接收任务")
+    time.sleep(0.05)
+    print(f"  → B 状态: {sm.get_state(oid_b)} (仍为 idle)")
+    print()
 
-    print(f"\n审计日志 ({len(audit_log)} 条，所有事件都被记录):")
+    # --- 对象C：user_id 过滤 ---
+    print("=== 对象C（只响应 u_admin）：user_id 过滤 ===")
+    bus.trigger_event("u1", "s1", "c1", oid_c, "接收任务")
+    time.sleep(0.05)
+    print(f"  → u1 触发 C：状态={sm.get_state(oid_c)} (不变)")
+
+    bus.trigger_event("u_admin", "s1", "c1", oid_c, "接收任务")
+    time.sleep(0.05)
+    print(f"  → u_admin 触发 C：状态={sm.get_state(oid_c)}")
+
+    bus.trigger_event("u_admin", "s1", "c1", oid_c, "开始处理")
+    time.sleep(0.05)
+    bus.trigger_event("u_admin", "s1", "c1", oid_c, "处理完成")
+    time.sleep(0.05)
+    print(f"  → C 完成：状态={sm.get_state(oid_c)}")
+    print()
+
+    # --- 汇总 ---
+    print(f"=== 最终状态 ===")
+    for oid, state in sm.list_states().items():
+        d = bus.get_object(oid)
+        print(f"  {d['name']}: {state}")
+
+    print(f"\n审计日志 ({len(audit_log)} 条):")
     for entry in audit_log:
         print(f"  {entry}")
 
