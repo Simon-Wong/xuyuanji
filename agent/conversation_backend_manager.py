@@ -11,10 +11,13 @@ from defination_types import MsgHis
 
 class ConversationBackend:
     id:str=""#对话后端ID
+
     user_id:str=""#用户ID
     session_id:str=""#会话ID
     cid:str=""#当前对话ID
+    
     caption:str=""#当前对话标题
+
     base_model:str=""#当前对话模型
     base_url:str=""#当前对话模型提供者URL
 
@@ -31,3 +34,14 @@ class ConversationBackend:
         self.id=self.user_id+self.session_id+self.cid
         self.actors={}
         self.actor_datas={}
+
+class ConversationBackendManager:
+    conversation_backends:dict[str, ConversationBackend]=None#所有对话后端
+    def __init__(self):
+        self.conversation_backends={}
+
+    def get_conversation_backend(self,id:str)->ConversationBackend:
+        return self.conversation_backends.get(id)
+    
+    def add(self,cb:ConversationBackend):
+        self.conversation_backends[cb.id]=cb
