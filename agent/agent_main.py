@@ -460,23 +460,21 @@ async def Test7():
     # 异步桥接：真正调用 actor.play()
     # ------------------------------------------------------------------
     async def _do_play(bus: EventBus,event: Event,actor: Actor, initial: bool, question: str = ""):
-        
         if initial:
             ad = await actor.play(role="user", input=question)
         else:
             actor_data = event.data.get("actor_data")
             ad = await actor.play(actor_data=actor_data)
         
+        tmp={"actor_data":ad}
+
         match ad.status:
             case ActorStatus.CHECKLIST:
-                bus.trigger_event(
-                    user_id, session_id, cid, oid, BE_checklist, data={"actor_data":ad})
+                bus.trigger_event(user_id, session_id, cid, oid, BE_checklist, data=tmp)
             case ActorStatus.NEED_EXECUTE_CHECKLIST:
-                bus.trigger_event(
-                    user_id, session_id, cid, oid, "开始执行", data={"actor_data":ad})
+                bus.trigger_event(user_id, session_id, cid, oid, "开始执行", data=tmp)
             case ActorStatus.FINAL_RESULT:
-                bus.trigger_event(
-                    user_id, session_id, cid, oid, "对话结束", data={"actor_data":ad})
+                bus.trigger_event(user_id, session_id, cid, oid, "对话结束", data=tmp)
 
     # ------------------------------------------------------------------
     # guard：转换前的条件检查
