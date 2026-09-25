@@ -459,73 +459,74 @@ async def Test7():
     # ------------------------------------------------------------------
     # 异步桥接：真正调用 actor.play()
     # ------------------------------------------------------------------
-    async def _do_play(oid: str, initial: bool, question: str = ""):
-        obj_data = global_event_bus.get_object(oid)
+    async def _do_play(bus: EventBus,event: Event,actor: Actor, initial: bool, question: str = ""):
+        
         if initial:
             ad = await actor.play(role="user", input=question)
         else:
-            prev_ad = obj_data.get("actor_data")
-            ad = await actor.play(actor_data=prev_ad)
-        obj_data["actor_data"] = ad
-
+            actor_data = event.data.get("actor_data")
+            ad = await actor.play(actor_data=actor_data)
+        
         match ad.status:
             case ActorStatus.CHECKLIST:
-                global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, BE_checklist, data=obj_data)
+                bus.trigger_event(
+                    user_id, session_id, cid, oid, BE_checklist, data={"actor_data":ad})
             case ActorStatus.NEED_EXECUTE_CHECKLIST:
-                global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, "开始执行", data=obj_data)
+                bus.trigger_event(
+                    user_id, session_id, cid, oid, "开始执行", data={"actor_data":ad})
             case ActorStatus.FINAL_RESULT:
-                global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, "对话结束", data=obj_data)
+                bus.trigger_event(
+                    user_id, session_id, cid, oid, "对话结束", data={"actor_data":ad})
 
     # ------------------------------------------------------------------
     # guard：转换前的条件检查
     # ------------------------------------------------------------------
-    def _guard_to_checklist(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _guard_to_checklist(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         return ad is not None and ad.status == ActorStatus.CHECKLIST
 
-    def _guard_to_executing(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _guard_to_executing(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         return ad is not None and ad.status == ActorStatus.NEED_EXECUTE_CHECKLIST
 
-    def _guard_to_done(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _guard_to_done(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         return ad is not None and ad.status == ActorStatus.FINAL_RESULT
 
     # ------------------------------------------------------------------
     # action：绑定在具体的边上
     #   oid 从 event.object_id 获取，question 从 event.data 获取
     # ------------------------------------------------------------------
-    def _action_start_first_play(bus, event, obj_data):
+    def _action_start_first_play(bus: EventBus, event: Event, obj_data:Any):
         question = event.data.get("question", "") if event.data else ""
+        actor:Actor = obj_data.get("actor")
         asyncio.run_coroutine_threadsafe(
-            _do_play(event.object_id, initial=True, question=question), loop)
+            _do_play(bus,event, actor,initial=True, question=question), loop)
 
-    def _action_continue_play(bus, event, obj_data):
+    def _action_continue_play(bus: EventBus, event: Event, obj_data:Any):
+        actor:Actor = obj_data.get("actor")
         asyncio.run_coroutine_threadsafe(
-            _do_play(event.object_id, initial=False), loop)
+            _do_play(bus,event, actor, initial=False), loop)
 
     # ------------------------------------------------------------------
     # on_enter：进入状态后的通用动作（多条入边共享）
     # ------------------------------------------------------------------
-    def _on_enter_checklist(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _on_enter_checklist(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         ad.check_done()
-        obj_data["actor_data"] = ad
-        bus.trigger_event(user_id, session_id, cid, event.object_id, "审批完成", data=ad)
+        tmp={"actor_data":ad}
+        bus.trigger_event(event.user_id, event.session_id, event.conversation_id, event.object_id, "审批完成", data=tmp)
 
-    def _on_enter_executing(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _on_enter_executing(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         ad = workspace.run(ad)
-        obj_data["actor_data"] = ad
-        bus.trigger_event(user_id, session_id, cid, event.object_id, "执行完成", data=ad)
+        tmp={"actor_data":ad}
+        bus.trigger_event(event.user_id, event.session_id, event.conversation_id, event.object_id, "执行完成", data=tmp)
 
-    def _on_enter_done(bus, event, obj_data):
-        ad = obj_data.get("actor_data")
+    def _on_enter_done(bus: EventBus, event: Event, obj_data:Any):
+        ad = event.data.get("actor_data")
         print(f"\n助手: {ad.result}")
-        print(f"最终状态: {sm.get_state(event.object_id)}")
+        #print(f"最终状态: {sm.get_state(event.object_id)}")
 
     # ==================================================================
     # 声明式定义（通过 add_state 传 on_enter，不再捅内部 dict）
@@ -569,7 +570,7 @@ async def Test7():
 
     oid = actor.get_id()
     global_event_bus.register_object(user_id=user_id, session_id=session_id,
-                                     conversation_id=cid, object_id=oid, data={"actor_data": actor},
+                                     conversation_id=cid, object_id=oid, data={"actor": actor},
                                      trace_id=None, event_type=BE_create_actor_data)
     sm.attach(oid, user_id=user_id, session_id=session_id, conversation_id=cid)
 
