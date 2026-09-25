@@ -444,12 +444,12 @@ async def Test7():
     # ==================================================================
     # EventBus 注册事件（审计/日志层）
     # ==================================================================
-    global_event_bus.register_event(event_type=BE_create_actor_data,
-                                    before=[BEH_create_actor_data])
-    global_event_bus.register_event(event_type=BE_checklist,
-                                    before=[BEH_checklist])
-    global_event_bus.register_event(event_type=BE_update_actor_data,
-                                    before=[BEH_update_actor_data])
+    # global_event_bus.register_event(event_type=BE_create_actor_data,
+    #                                 before=[BEH_create_actor_data])
+    # global_event_bus.register_event(event_type=BE_checklist,
+    #                                 before=[BEH_checklist])
+    # global_event_bus.register_event(event_type=BE_update_actor_data,
+    #                                 before=[BEH_update_actor_data])
 
     # ==================================================================
     # StateMachine
@@ -471,13 +471,13 @@ async def Test7():
         match ad.status:
             case ActorStatus.CHECKLIST:
                 global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, BE_checklist, data=ad)
+                    user_id, session_id, cid, oid, BE_checklist, data=obj_data)
             case ActorStatus.NEED_EXECUTE_CHECKLIST:
                 global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, "开始执行", data=ad)
+                    user_id, session_id, cid, oid, "开始执行", data=obj_data)
             case ActorStatus.FINAL_RESULT:
                 global_event_bus.trigger_event(
-                    user_id, session_id, cid, oid, "对话结束", data=ad)
+                    user_id, session_id, cid, oid, "对话结束", data=obj_data)
 
     # ------------------------------------------------------------------
     # guard：转换前的条件检查
@@ -569,7 +569,7 @@ async def Test7():
 
     oid = actor.get_id()
     global_event_bus.register_object(user_id=user_id, session_id=session_id,
-                                     conversation_id=cid, object_id=oid, data=actor,
+                                     conversation_id=cid, object_id=oid, data={"actor_data": actor},
                                      trace_id=None, event_type=BE_create_actor_data)
     sm.attach(oid, user_id=user_id, session_id=session_id, conversation_id=cid)
 
