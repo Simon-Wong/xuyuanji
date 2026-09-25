@@ -11,6 +11,8 @@ sys.path.append(str(ROOT_DIR))
 
 import asyncio
 import os
+from typing import Any
+
 from configuration import UserConfig
 
 from model_store import ModelStore
@@ -24,7 +26,7 @@ global_message_manager = MessageManager()
 
 from pre_load import all_tools
 
-from event_bus import EventBus
+from event_bus import EventBus,Event
 global_event_bus = EventBus()
        
 
@@ -375,118 +377,209 @@ async def Test6():
         global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
 
 
-from conversation_backend import ConversationBackend
+from agent.conversation_backend_manager import ConversationBackend,ConversationBackendManager
 from dealwith_event_bus import BE_create_conversation_backend,BEH_create_conversation_backend
 from dealwith_event_bus import BE_create_actor_data,BEH_create_actor_data
 from dealwith_event_bus import BE_checklist,BEH_checklist
 from dealwith_event_bus import BE_update_actor_data,BEH_update_actor_data
 
-async def Test7():
-    #模拟用户登录
-    user_id="test_user_1"
-    session_id="session_1"
+global_conversation_backend_manager=ConversationBackendManager()
 
-    global_user_session_conversation_manager.record_user_session(user_id,session_id)#模拟用户登录后注册会话
-    cids=global_user_session_conversation_manager.get_conversations_id(user_id)#获取用户的对话列表
-    cid=""
-    caption=""
-    if cids==[]:
+async def Test7():
+    from agent.event_bus.state_machine import StateMachine
+
+    user_id = "test_user_1"
+    session_id = "session_1"
+    global_user_session_conversation_manager.record_user_session(user_id, session_id)
+    cids = global_user_session_conversation_manager.get_conversations_id(user_id)
+
+    cid = ""
+    caption = ""
+    if cids == []:
         print("用户没有任何对话")
-        cid="conversation_1"
-        caption="对话1"
+        cid = "conversation_1"
+        caption = "对话1"
         print(f"用户创建对话{cid} {caption}")
     else:
         print(f"用户已有{len(cids)}个对话")
-        cid=cids[0]#模拟用户选择对话1
+        cid = cids[0]
         print(f"用户选择对话{cid}")
-        flag,caption=global_user_session_conversation_manager.get_conversation_caption(user_id,cid)#获取对话标题
-        if flag==False:
+        flag, caption = global_user_session_conversation_manager.get_conversation_caption(user_id, cid)
+        if flag == False:
             print(reason_str)
             return
         else:
             print(f"标题为：{caption}")
 
-    flag,reason_str=global_user_session_conversation_manager.record_user_session_conversation(user_id,session_id,cid,caption)#模拟用户打开对话
-    if flag==False:
+    flag, reason_str = global_user_session_conversation_manager.record_user_session_conversation(
+        user_id, session_id, cid, caption)
+    if flag == False:
         print(reason_str)
 
-    provider = global_model_store.get_model_provider(env_model, env_base_url)#获取模型
+    # ==================================================================
+    # 初始化 actor、workspace、cb1
+    # ==================================================================
+    provider = global_model_store.get_model_provider(env_model, env_base_url)
     run_config = RunConfig(model_provider=provider)
-    _,agent,_=global_agent_store.get_agent("八卦小助手")
+    _, agent, _ = global_agent_store.get_agent("八卦小助手")
 
-    msghis=global_message_manager.get_messages(user_id,cid)#获取对话历史
-    user_cfg=UserConfig.load(user_id=user_id,session_id=session_id,config_file_name="user_config.json")#加载用户配置
-    workspace=global_workspace_manager.get_workspace(user_cfg,cid)#获取工作空间
+    msghis = global_message_manager.get_messages(user_id, cid)
+    user_cfg = UserConfig.load(user_id=user_id, session_id=session_id, config_file_name="user_config.json")
+    workspace = global_workspace_manager.get_workspace(user_cfg, cid)
 
-    actor=Actor(agent,run_config,msghis,user_cfg)
+    actor = Actor(agent, run_config, msghis, user_cfg)
 
-    #模拟创建对话后端
-    cb1=ConversationBackend()
-    cb1.user_id=user_id
-    cb1.session_id=session_id
-    cb1.cid=cid
-    cb1.caption=caption
-    cb1.base_model=env_model
-    cb1.base_url=env_base_url
-    cb1.user_cfg=user_cfg
-    cb1.workspace=workspace
-    cb1.msghis=msghis
+    cb1 = ConversationBackend()
+    cb1.user_id = user_id
+    cb1.session_id = session_id
+    cb1.cid = cid
+    cb1.caption = caption
+    cb1.base_model = env_model
+    cb1.base_url = env_base_url
+    cb1.user_cfg = user_cfg
+    cb1.workspace = workspace
+    cb1.msghis = msghis
+    cb1.actors[actor.get_id()] = actor
 
-    cb1.actors[actor.get_id()]=actor
-
-    #
-    #注册事件
-    #
-
-    #对话后端创建事件
-    global_event_bus.register_event(event_type=BE_create_conversation_backend,
-                                    before=[BEH_create_conversation_backend])
-    #注册ActorData创建事件
+    # ==================================================================
+    # EventBus 注册事件（审计/日志层）
+    # ==================================================================
     global_event_bus.register_event(event_type=BE_create_actor_data,
                                     before=[BEH_create_actor_data])
-    #注册检查列表事件
     global_event_bus.register_event(event_type=BE_checklist,
                                     before=[BEH_checklist])
-    #注册ActorData更新事件
     global_event_bus.register_event(event_type=BE_update_actor_data,
                                     before=[BEH_update_actor_data])
 
+    # ==================================================================
+    # StateMachine
+    # ==================================================================
+    loop = asyncio.get_running_loop()
 
-    #注册对话后端对象
-    global_event_bus.register_object(user_id=user_id,session_id=session_id,conversation_id=cid,
-                                     object_id=cb1.id,data=cb1,
-                                     trace_id=None,
-                                     event_type=BE_create_conversation_backend)
+    # ------------------------------------------------------------------
+    # 异步桥接：真正调用 actor.play()
+    # ------------------------------------------------------------------
+    async def _do_play(oid: str, initial: bool, question: str = ""):
+        obj_data = global_event_bus.get_object(oid)
+        if initial:
+            ad = await actor.play(role="user", input=question)
+        else:
+            prev_ad = obj_data.get("actor_data")
+            ad = await actor.play(actor_data=prev_ad)
+        obj_data["actor_data"] = ad
 
-    actor_data:ActorData=await actor.play(role="user",input="娱乐圈最近有什么大新闻？")
+        match ad.status:
+            case ActorStatus.CHECKLIST:
+                global_event_bus.trigger_event(
+                    user_id, session_id, cid, oid, BE_checklist, data=ad)
+            case ActorStatus.NEED_EXECUTE_CHECKLIST:
+                global_event_bus.trigger_event(
+                    user_id, session_id, cid, oid, "开始执行", data=ad)
+            case ActorStatus.FINAL_RESULT:
+                global_event_bus.trigger_event(
+                    user_id, session_id, cid, oid, "对话结束", data=ad)
 
+    # ------------------------------------------------------------------
+    # guard：转换前的条件检查
+    # ------------------------------------------------------------------
+    def _guard_to_checklist(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        return ad is not None and ad.status == ActorStatus.CHECKLIST
 
+    def _guard_to_executing(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        return ad is not None and ad.status == ActorStatus.NEED_EXECUTE_CHECKLIST
 
-    #注册ActorData对象
-    global_event_bus.register_object(user_id=user_id,session_id=session_id,conversation_id=cid,
-                                     object_id=actor_data.get_actor_id(),data=actor_data,
-                                     trace_id=None,
-                                     event_type=BE_create_actor_data)
-    
+    def _guard_to_done(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        return ad is not None and ad.status == ActorStatus.FINAL_RESULT
 
+    # ------------------------------------------------------------------
+    # action：绑定在具体的边上
+    #   oid 从 event.object_id 获取，question 从 event.data 获取
+    # ------------------------------------------------------------------
+    def _action_start_first_play(bus, event, obj_data):
+        question = event.data.get("question", "") if event.data else ""
+        asyncio.run_coroutine_threadsafe(
+            _do_play(event.object_id, initial=True, question=question), loop)
 
-    # while actor_data.status!=ActorStatus.FINAL_RESULT:
-    #     if actor_data.status==ActorStatus.CHECKLIST:#需要外部审批
-    #         #假装外部已经审批
-    #         actor_data.check_done()
+    def _action_continue_play(bus, event, obj_data):
+        asyncio.run_coroutine_threadsafe(
+            _do_play(event.object_id, initial=False), loop)
 
-    #     if actor_data.status==ActorStatus.NEED_EXECUTE_CHECKLIST:#需要外部执行
-    #         actor_data=workspace.run(actor_data)
+    # ------------------------------------------------------------------
+    # on_enter：进入状态后的通用动作（多条入边共享）
+    # ------------------------------------------------------------------
+    def _on_enter_checklist(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        ad.check_done()
+        obj_data["actor_data"] = ad
+        bus.trigger_event(user_id, session_id, cid, event.object_id, "审批完成", data=ad)
 
-    #     if actor_data.status==ActorStatus.CALL_RESULT:#继续运行
-    #         actor_data=await actor.play(actor_data=actor_data)
+    def _on_enter_executing(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        ad = workspace.run(ad)
+        obj_data["actor_data"] = ad
+        bus.trigger_event(user_id, session_id, cid, event.object_id, "执行完成", data=ad)
 
-    # print(f"\n助手: {actor_data.result}")
+    def _on_enter_done(bus, event, obj_data):
+        ad = obj_data.get("actor_data")
+        print(f"\n助手: {ad.result}")
+        print(f"最终状态: {sm.get_state(event.object_id)}")
 
-    # closed_cids=global_user_session_conversation_manager.close_session(user_id,session_id)#关闭会话，返回因关闭会话而关闭的所有对话id
-    # for ccid in closed_cids:
-    #     global_workspace_manager.stop_one(user_id,ccid)#关闭工作空间
+    # ==================================================================
+    # 声明式定义（通过 add_state 传 on_enter，不再捅内部 dict）
+    # ==================================================================
+    sm = StateMachine(global_event_bus)
 
+    sm.add_state("idle", initial=True)
+    sm.add_state("calling_first")
+    sm.add_state("calling_continue")
+    sm.add_state("checklist",     on_enter=_on_enter_checklist)
+    sm.add_state("executing",     on_enter=_on_enter_executing)
+    sm.add_state("done",          on_enter=_on_enter_done)
+
+    sm.add_transition("idle",             "对话开始",     "calling_first",
+                      action=_action_start_first_play)
+
+    sm.add_transition("calling_first",    BE_checklist,   "checklist",
+                      guard=_guard_to_checklist)
+    sm.add_transition("calling_first",    "开始执行",     "executing",
+                      guard=_guard_to_executing)
+    sm.add_transition("calling_first",    "对话结束",     "done",
+                      guard=_guard_to_done)
+
+    sm.add_transition("calling_continue", BE_checklist,   "checklist",
+                      guard=_guard_to_checklist)
+    sm.add_transition("calling_continue", "开始执行",     "executing",
+                      guard=_guard_to_executing)
+    sm.add_transition("calling_continue", "对话结束",     "done",
+                      guard=_guard_to_done)
+
+    sm.add_transition("checklist",        "审批完成",     "calling_continue",
+                      action=_action_continue_play)
+    sm.add_transition("executing",        "执行完成",     "calling_continue",
+                      action=_action_continue_play)
+
+    # ==================================================================
+    # 启动：actor 必须先 register_object，因为 StateMachine._make_handler
+    #       会在每次事件到来时通过 event.object_id 调用 bus.get_object(oid)
+    #       来获取 actor 的数据
+    # ==================================================================
+
+    oid = actor.get_id()
+    global_event_bus.register_object(user_id=user_id, session_id=session_id,
+                                     conversation_id=cid, object_id=oid, data=actor,
+                                     trace_id=None, event_type=BE_create_actor_data)
+    sm.attach(oid, user_id=user_id, session_id=session_id, conversation_id=cid)
+
+    initial_question = "娱乐圈最近有什么大新闻？"
+    global_event_bus.trigger_event(user_id, session_id, cid, oid, "对话开始",
+                                   data={"question": initial_question})
+
+    await asyncio.to_thread(input, "\n按回车退出程序...")
+
+    sm.print_graph()
 
 async def main():
     initialize()
